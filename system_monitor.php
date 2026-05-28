@@ -1,33 +1,51 @@
 <?php
+set_time_limit(0);
+ini_set('max_execution_time', 0);
+ini_set('memory_limit', '1G'); // ✅ INCREASED from 256M to 1G
+
+// ========================================
+// KEEP-ALIVE MONITORING SYSTEM
+// ========================================
+
+// PID and Heartbeat files for KEEP-ALIVE monitoring
+$runtimeDir = __DIR__ . '/runtime';
+if (!is_dir($runtimeDir)) { mkdir($runtimeDir, 0777, true); }
+$pidFile = $runtimeDir . '/system_monitor.pid';
+$heartbeatFile = $runtimeDir . '/system_monitor_heartbeat.txt';
+
+
+// Write PID on start
+file_put_contents($pidFile, getmypid() . "\n" . date('Y-m-d H:i:s'));
+
+// Update heartbeat function
+function updateHeartbeat() {
+    global $heartbeatFile;
+    file_put_contents($heartbeatFile, time());
+}
+
+// Register shutdown function to cleanup
+register_shutdown_function(function() use ($pidFile, $heartbeatFile) {
+    @unlink($pidFile);
+    @unlink($heartbeatFile);
+    echo "\n╔════════════════════════════════════════════════════════════════╗\n";
+    echo "║        SYSTEM MONITOR STOPPED                                  ║\n";
+    echo "╚════════════════════════════════════════════════════════════════╝\n";
+});
 
 require_once 'config.php';
 
-// ========================================
-// CONFIGURATION - THRESHOLDS
-// ========================================
-define('CHECK_INTERVAL', 10);  // Check every 5 seconds (lightweight)
-define('ENABLE_NETWORK_TRAFFIC', true);  // NEW: Enable network traffic monitoring
-define('ENABLE_LATENCY', true);          // NEW: Enable latency monitoring
-define('ENABLE_DISK', true);
-define('ENABLE_DETAILED_LOGGING', true);
-define('ENABLE_SYSTEM_LOGS', true);
-
-// THRESHOLD SETTINGS - Only capture if change exceeds these values
-define('CPU_THRESHOLD', 1.0);        
-define('RAM_THRESHOLD', 1.0);       
-define('NETWORK_THRESHOLD', 5.0);    // NEW: MB/s threshold
-define('LATENCY_THRESHOLD', 10.0);   // NEW: ms threshold
-define('DISK_THRESHOLD', 0.01);  // LOWERED - Disk changes slowly       
-// // PURE THRESHOLD MODE - Only save on actual changes (Boss requirement)
-// define('FORCE_CAPTURE_INTERVAL', 0);  // DISABLED
-// define('FORCE_CAPTURE_INTERVAL', 60);
-
-// GATEWAY/DNS for latency testing
-define('LATENCY_HOST', '1.1.1.1');  // Cloudflare DNS
+// Global state
 $GLOBALS['WMIC_AVAILABLE'] = false;
 $GLOBALS['last_values'] = [];
 $GLOBALS['last_capture_time'] = 0;
-$GLOBALS['last_bytes'] = ['sent' => 0, 'received' => 0, 'time' => 0];
+
+echo "╔════════════════════════════════════════════════════════════════╗\n";
+echo "║        SYSTEM MONITOR - PowerShell Safe (1GB Memory)           ║\n";
+echo "╚════════════════════════════════════════════════════════════════╝\n\n";
+
+// ========================================
+// LOGGING SYSTEM
+// ========================================
 
 function logToSystem($deviceId, $level, $category, $message) {
     if (!ENABLE_SYSTEM_LOGS) return;
@@ -48,6 +66,10 @@ function logToSystem($deviceId, $level, $category, $message) {
     }
 }
 
+// ========================================
+// WMIC DETECTION
+// ========================================
+
 function detectWMIC() {
     static $checked = false;
     static $available = false;
@@ -59,12 +81,15 @@ function detectWMIC() {
     $available = ($status === 0 && !empty($output));
     $GLOBALS['WMIC_AVAILABLE'] = $available;
     
+    echo $available ? "✓ WMIC available\n" : "⚠ WMIC not available, using PowerShell\n";
+    
     return $available;
 }
 
 // ========================================
-// EXISTING METRIC FUNCTIONS (CPU, RAM, DISK)
+// CPU MONITORING
 // ========================================
+
 function getCPUUsage() {
     try {
         if (detectWMIC()) {
@@ -97,97 +122,61 @@ function getCPUUsage() {
 function getCPUFrequency() {
     try {
         if (detectWMIC()) {
-            exec('wmic cpu get CurrentClockSpeed,MaxClockSpeed /value 2>&1', $output, $status);
-            if ($status === 0 && !empty($output)) {
-                $current = 0;
-                $max = 0;
+            exec('wmic cpu get CurrentClockSpeed /value 2>&1', $output, $status);
+            if ($status === 0) {
                 foreach ($output as $line) {
                     if (strpos($line, 'CurrentClockSpeed') !== false) {
                         preg_match('/CurrentClockSpeed=(\d+)/', $line, $matches);
-                        $current = isset($matches[1]) ? (int)$matches[1] : 0;
+                        if (isset($matches[1])) {
+                            return round((int)$matches[1] / 1000, 2);
+                        }
                     }
-                    if (strpos($line, 'MaxClockSpeed') !== false) {
-                        preg_match('/MaxClockSpeed=(\d+)/', $line, $matches);
-                        $max = isset($matches[1]) ? (int)$matches[1] : 0;
-                    }
-                }
-                
-                if ($current > 0) {
-                    return [
-                        'current_mhz' => $current,
-                        'max_mhz' => $max,
-                        'current_ghz' => round($current / 1000, 2),
-                        'max_ghz' => round($max / 1000, 2)
-                    ];
                 }
             }
         }
-    } catch (Exception $e) {}
+        
+        exec('powershell -Command "Get-WmiObject Win32_Processor | Select-Object -ExpandProperty CurrentClockSpeed" 2>&1', $output2);
+        if (!empty($output2) && is_numeric(trim($output2[0]))) {
+            return round((float)trim($output2[0]) / 1000, 2);
+        }
+    } catch (Exception $e) {
+        error_log("CPU frequency exception: " . $e->getMessage());
+    }
     
-    return ['current_mhz' => 0, 'max_mhz' => 0, 'current_ghz' => 0, 'max_ghz' => 0];
+    return 0.0;
 }
+
+// ========================================
+// RAM MONITORING
+// ========================================
 
 function getRAMUsage() {
     try {
         if (detectWMIC()) {
             exec('wmic OS get FreePhysicalMemory,TotalVisibleMemorySize /value 2>&1', $output, $status);
-            if ($status === 0 && !empty($output)) {
-                $total = 0; $free = 0;
+            if ($status === 0) {
+                $free = null;
+                $total = null;
+                
                 foreach ($output as $line) {
                     if (strpos($line, 'FreePhysicalMemory') !== false) {
                         preg_match('/FreePhysicalMemory=(\d+)/', $line, $matches);
-                        $free = isset($matches[1]) ? (int)$matches[1] : 0;
+                        if (isset($matches[1])) $free = (float)$matches[1];
                     }
                     if (strpos($line, 'TotalVisibleMemorySize') !== false) {
                         preg_match('/TotalVisibleMemorySize=(\d+)/', $line, $matches);
-                        $total = isset($matches[1]) ? (int)$matches[1] : 0;
+                        if (isset($matches[1])) $total = (float)$matches[1];
                     }
                 }
                 
-                if ($total > 0) {
-                    $totalMB = round($total / 1024);
-                    $totalGB = round($total / 1024 / 1024, 2);
-                    $usedKB = $total - $free;
-                    $usedMB = round($usedKB / 1024);
-                    $usedGB = round($usedKB / 1024 / 1024, 2);
-                    $freeGB = round($free / 1024 / 1024, 2);
-                    $usagePercent = round(($usedKB / $total) * 100, 2);
+                if ($total !== null && $free !== null && $total > 0) {
+                    $used = $total - $free;
+                    $percentage = ($used / $total) * 100;
                     
                     return [
-                        'usage' => $usagePercent,
-                        'total_mb' => $totalMB,
-                        'used_mb' => $usedMB,
-                        'total_gb' => $totalGB,
-                        'used_gb' => $usedGB,
-                        'free_gb' => $freeGB
-                    ];
-                }
-            }
-        }
-        
-        exec('powershell -Command "$os = Get-WmiObject Win32_OperatingSystem; $total = $os.TotalVisibleMemorySize; $free = $os.FreePhysicalMemory; Write-Output \"$total,$free\"" 2>&1', $output2, $status2);
-        if ($status2 === 0 && !empty($output2)) {
-            $parts = explode(',', trim($output2[0]));
-            if (count($parts) === 2) {
-                $total = (int)$parts[0];
-                $free = (int)$parts[1];
-                
-                if ($total > 0) {
-                    $totalMB = round($total / 1024);
-                    $totalGB = round($total / 1024 / 1024, 2);
-                    $usedKB = $total - $free;
-                    $usedMB = round($usedKB / 1024);
-                    $usedGB = round($usedKB / 1024 / 1024, 2);
-                    $freeGB = round($free / 1024 / 1024, 2);
-                    $usagePercent = round(($usedKB / $total) * 100, 2);
-                    
-                    return [
-                        'usage' => $usagePercent,
-                        'total_mb' => $totalMB,
-                        'used_mb' => $usedMB,
-                        'total_gb' => $totalGB,
-                        'used_gb' => $usedGB,
-                        'free_gb' => $freeGB
+                        'percentage' => round($percentage, 2),
+                        'used_gb' => round($used / 1024 / 1024, 2),
+                        'total_gb' => round($total / 1024 / 1024, 2)
                     ];
                 }
             }
@@ -196,175 +185,201 @@ function getRAMUsage() {
         error_log("RAM exception: " . $e->getMessage());
     }
     
-    return [
-        'usage' => 0,
-        'total_mb' => 0,
-        'used_mb' => 0,
-        'total_gb' => 0,
-        'used_gb' => 0,
-        'free_gb' => 0
-    ];
+    return ['percentage' => 0.0, 'used_gb' => 0.0, 'total_gb' => 0.0];
 }
 
-function getDiskUsage() {
-    if (!ENABLE_DISK) return null;
+// ========================================
+// NETWORK MONITORING - HYBRID METHOD
+// ========================================
+
+function getNetworkTrafficTaskManager() {
+    static $adapterName = null;
+    static $lastBytes = ['sent' => 0, 'received' => 0, 'time' => 0];
+    static $methodUsed = null;
     
     try {
-        $drive = 'C:';
-        
-        // Method 1: Try WMIC first
-        if (detectWMIC()) {
-            exec("wmic logicaldisk where \"DeviceID='$drive'\" get Size,FreeSpace /value 2>&1", $output, $status);
-            if ($status === 0 && !empty($output)) {
-                $size = 0; $free = 0;
-                foreach ($output as $line) {
-                    if (strpos($line, 'FreeSpace') !== false) {
-                        preg_match('/FreeSpace=(\d+)/', $line, $matches);
-                        $free = isset($matches[1]) ? (int)$matches[1] : 0;
-                    }
-                    if (strpos($line, 'Size') !== false && strpos($line, 'FreeSpace') === false) {
-                        preg_match('/Size=(\d+)/', $line, $matches);
-                        $size = isset($matches[1]) ? (int)$matches[1] : 0;
-                    }
-                }
-                
-                if ($size > 0) {
-                    $totalGB = round($size / 1024 / 1024 / 1024, 2);
-                    $freeGB = round($free / 1024 / 1024 / 1024, 2);
-                    $usedGB = round(($size - $free) / 1024 / 1024 / 1024, 2);
-                    $usagePercent = round((($size - $free) / $size) * 100, 2);
-                    
-                    return [
-                        'usage' => $usagePercent,
-                        'total_gb' => $totalGB,
-                        'used_gb' => $usedGB,
-                        'free_gb' => $freeGB
-                    ];
-                }
+        // Get active adapter name (cache it)
+        if ($adapterName === null) {
+            exec('powershell -Command "Get-NetAdapter | Where-Object {$_.Status -eq \'Up\' -and $_.Virtual -eq $false} | Select-Object -First 1 -ExpandProperty Name"', $adapterOutput, $adapterStatus);
+            
+            if ($adapterStatus === 0 && !empty($adapterOutput)) {
+                $adapterName = trim(implode('', $adapterOutput));
+                echo "✓ Using network adapter: $adapterName\n";
+            } else {
+                return [
+                    'upload_speed' => 0.0, 
+                    'download_speed' => 0.0, 
+                    'total_speed' => 0.0,
+                    'link_speed_mbps' => 0,
+                    'utilization_percent' => 0.0
+                ];
             }
         }
         
-        // Method 2: Fallback to PowerShell if WMIC failed
-        $cmd = 'powershell -Command "Get-PSDrive C | Select-Object Used,Free | ConvertTo-Json"';
-        exec($cmd . ' 2>&1', $psOutput, $psStatus);
+        // Try Get-NetAdapterStatistics first
+        $tempFile = sys_get_temp_dir() . '/network_monitor_' . getmypid() . '.ps1';
         
-        if ($psStatus === 0 && !empty($psOutput)) {
-            $json = implode('', $psOutput);
-            $data = json_decode($json, true);
-            
-            if ($data && isset($data['Used']) && isset($data['Free'])) {
-                $used = (float)$data['Used'];
-                $free = (float)$data['Free'];
-                $total = $used + $free;
-                
-                if ($total > 0) {
-                    $totalGB = round($total / 1024 / 1024 / 1024, 2);
-                    $freeGB = round($free / 1024 / 1024 / 1024, 2);
-                    $usedGB = round($used / 1024 / 1024 / 1024, 2);
-                    $usagePercent = round(($used / $total) * 100, 2);
-                    
-                    return [
-                        'usage' => $usagePercent,
-                        'total_gb' => $totalGB,
-                        'used_gb' => $usedGB,
-                        'free_gb' => $freeGB
-                    ];
-                }
-            }
-        }
-        
-        // Method 3: Try disk_free_space() PHP function (last resort)
-        $totalSpace = disk_total_space($drive);
-        $freeSpace = disk_free_space($drive);
-        
-        if ($totalSpace && $freeSpace) {
-            $totalGB = round($totalSpace / 1024 / 1024 / 1024, 2);
-            $freeGB = round($freeSpace / 1024 / 1024 / 1024, 2);
-            $usedGB = round(($totalSpace - $freeSpace) / 1024 / 1024 / 1024, 2);
-            $usagePercent = round((($totalSpace - $freeSpace) / $totalSpace) * 100, 2);
-            
-            return [
-                'usage' => $usagePercent,
-                'total_gb' => $totalGB,
-                'used_gb' => $usedGB,
-                'free_gb' => $freeGB
-            ];
-        }
-        
-    } catch (Exception $e) {
-        error_log("Disk exception: " . $e->getMessage());
+        $psScript = <<<POWERSHELL
+\$ErrorActionPreference = 'SilentlyContinue'
+\$adapter = Get-NetAdapter -Name '{$adapterName}' -ErrorAction SilentlyContinue
+if (\$adapter) {
+    \$stats = Get-NetAdapterStatistics -Name '{$adapterName}' -ErrorAction SilentlyContinue
+    \$linkSpeed = \$adapter.LinkSpeed
+    if (\$stats) {
+        \$sent = \$stats.SentBytes
+        \$received = \$stats.ReceivedBytes
+        Write-Output "\$sent|\$received|\$linkSpeed"
     }
-    
-    return null;
 }
-
-// ========================================
-// NEW: NETWORK TRAFFIC MONITORING
-// ========================================
-// ========================================
-// NEW: NETWORK TRAFFIC MONITORING (FIXED - Using netstat)
-// ========================================
-function getNetworkTraffic() {
-    if (!ENABLE_NETWORK_TRAFFIC) return null;
-    
-    try {
-        // Method 1: Try netstat -e (most reliable)
-        exec('netstat -e 2>&1', $output, $status);
+POWERSHELL;
+        
+        file_put_contents($tempFile, $psScript);
+        exec("powershell -ExecutionPolicy Bypass -File \"$tempFile\" 2>&1", $output, $status);
+        @unlink($tempFile);
         
         if ($status === 0 && !empty($output)) {
-            $bytesSent = 0;
-            $bytesReceived = 0;
+            $result = explode('|', trim(implode('', $output)));
             
-            foreach ($output as $line) {
-                // Look for: Bytes           12345678    98765432
-                if (preg_match('/Bytes\s+(\d+)\s+(\d+)/', $line, $matches)) {
-                    $bytesReceived = (int)$matches[1];
-                    $bytesSent = (int)$matches[2];
-                    break;
+            if (count($result) >= 3) {
+                $currentSent = floatval($result[0]);
+                $currentReceived = floatval($result[1]);
+                $linkSpeedStr = trim($result[2]);
+                
+                // Parse link speed
+                $linkSpeedMbps = 0;
+                if (preg_match('/(\d+(?:\.\d+)?)\s*(Gbps|Mbps)/i', $linkSpeedStr, $matches)) {
+                    $speed = floatval($matches[1]);
+                    $unit = strtolower($matches[2]);
+                    $linkSpeedMbps = ($unit === 'gbps') ? ($speed * 1000) : $speed;
                 }
-            }
-            
-            if ($bytesSent > 0 || $bytesReceived > 0) {
+                
                 $currentTime = microtime(true);
                 
-                // Calculate speed if we have previous values
-                if ($GLOBALS['last_bytes']['time'] > 0) {
-                    $timeDiff = $currentTime - $GLOBALS['last_bytes']['time'];
+                // Calculate speeds if we have previous data
+                if ($lastBytes['time'] > 0) {
+                    $timeDiff = $currentTime - $lastBytes['time'];
                     
                     if ($timeDiff > 0) {
-                        $sentDiff = $bytesSent - $GLOBALS['last_bytes']['sent'];
-                        $receivedDiff = $bytesReceived - $GLOBALS['last_bytes']['received'];
+                        $sentDiff = $currentSent - $lastBytes['sent'];
+                        $receivedDiff = $currentReceived - $lastBytes['received'];
+                        
+                        // Handle counter resets
+                        if ($sentDiff < 0) $sentDiff = $currentSent;
+                        if ($receivedDiff < 0) $receivedDiff = $currentReceived;
+                        
+                        // Bytes per second
+                        $bytesSentPerSec = $sentDiff / $timeDiff;
+                        $bytesReceivedPerSec = $receivedDiff / $timeDiff;
                         
                         // Convert to MB/s
-                        $uploadSpeed = round(($sentDiff / $timeDiff) / 1024 / 1024, 2);
-                        $downloadSpeed = round(($receivedDiff / $timeDiff) / 1024 / 1024, 2);
+                        $uploadMBps = $bytesSentPerSec / 1024 / 1024;
+                        $downloadMBps = $bytesReceivedPerSec / 1024 / 1024;
+                        $totalMBps = $uploadMBps + $downloadMBps;
                         
-                        // Store current values for next calculation
-                        $GLOBALS['last_bytes'] = [
-                            'sent' => $bytesSent,
-                            'received' => $bytesReceived,
+                        // Network utilization
+                        $utilizationPercent = 0.0;
+                        if ($linkSpeedMbps > 0) {
+                            $totalBps = $bytesSentPerSec + $bytesReceivedPerSec;
+                            $linkSpeedBps = $linkSpeedMbps * 1000000 / 8;
+                            $utilizationPercent = ($totalBps / $linkSpeedBps) * 100;
+                        }
+                        
+                        // Update last values
+                        $lastBytes = [
+                            'sent' => $currentSent,
+                            'received' => $currentReceived,
                             'time' => $currentTime
                         ];
                         
+                        if ($methodUsed !== 'Statistics') {
+                            echo "✓ Network method: Get-NetAdapterStatistics (ACCURATE)\n";
+                            $methodUsed = 'Statistics';
+                        }
+                        
                         return [
-                            'upload_speed' => max(0, $uploadSpeed),      // MB/s
-                            'download_speed' => max(0, $downloadSpeed),  // MB/s
-                            'total_speed' => max(0, $uploadSpeed + $downloadSpeed)
+                            'upload_speed' => round($uploadMBps, 3),
+                            'download_speed' => round($downloadMBps, 3),
+                            'total_speed' => round($totalMBps, 3),
+                            'link_speed_mbps' => round($linkSpeedMbps, 0),
+                            'utilization_percent' => round($utilizationPercent, 2)
                         ];
                     }
                 }
                 
-                // First run - just store values
-                $GLOBALS['last_bytes'] = [
-                    'sent' => $bytesSent,
-                    'received' => $bytesReceived,
+                // First run - store initial values
+                $lastBytes = [
+                    'sent' => $currentSent,
+                    'received' => $currentReceived,
                     'time' => $currentTime
                 ];
                 
                 return [
-                    'upload_speed' => 0,
-                    'download_speed' => 0,
-                    'total_speed' => 0
+                    'upload_speed' => 0.0,
+                    'download_speed' => 0.0,
+                    'total_speed' => 0.0,
+                    'link_speed_mbps' => round($linkSpeedMbps, 0),
+                    'utilization_percent' => 0.0
+                ];
+            }
+        }
+        
+        // Fallback to Performance Counter
+        echo "⚠ Falling back to Performance Counter method\n";
+        
+        $tempFile2 = sys_get_temp_dir() . '/network_monitor_pc_' . getmypid() . '.ps1';
+        
+        $psScript2 = <<<POWERSHELL
+\$ErrorActionPreference = 'SilentlyContinue'
+\$adapterName = '{$adapterName}'
+
+\$counters = Get-Counter -Counter "\\Network Interface(\$adapterName)\\Bytes Sent/sec","\\Network Interface(\$adapterName)\\Bytes Received/sec","\\Network Interface(\$adapterName)\\Current Bandwidth" -SampleInterval 1 -MaxSamples 1
+
+if (\$counters) {
+    \$sent = [math]::Round(\$counters.CounterSamples[0].CookedValue, 2)
+    \$received = [math]::Round(\$counters.CounterSamples[1].CookedValue, 2)
+    \$bandwidth = [math]::Round(\$counters.CounterSamples[2].CookedValue, 2)
+    Write-Output "\$sent|\$received|\$bandwidth"
+}
+POWERSHELL;
+        
+        file_put_contents($tempFile2, $psScript2);
+        exec("powershell -ExecutionPolicy Bypass -File \"$tempFile2\" 2>&1", $output2, $status2);
+        @unlink($tempFile2);
+        
+        if ($status2 === 0 && !empty($output2)) {
+            $result2 = explode('|', trim(implode('', $output2)));
+            
+            if (count($result2) >= 3) {
+                $bytesSentPerSec = floatval($result2[0]);
+                $bytesReceivedPerSec = floatval($result2[1]);
+                $bandwidthBps = floatval($result2[2]);
+                
+                // Convert to MB/s
+                $uploadMBps = $bytesSentPerSec / 1024 / 1024;
+                $downloadMBps = $bytesReceivedPerSec / 1024 / 1024;
+                $totalMBps = $uploadMBps + $downloadMBps;
+                
+                // Link speed in Mbps
+                $linkSpeedMbps = $bandwidthBps > 0 ? round($bandwidthBps / 1000000, 0) : 0;
+                
+                // Network utilization percentage
+                $utilizationPercent = 0.0;
+                if ($bandwidthBps > 0) {
+                    $totalBps = $bytesSentPerSec + $bytesReceivedPerSec;
+                    $utilizationPercent = ($totalBps / $bandwidthBps) * 100;
+                }
+                
+                if ($methodUsed !== 'PerfCounter') {
+                    echo "✓ Network method: Performance Counter (FALLBACK)\n";
+                    $methodUsed = 'PerfCounter';
+                }
+                
+                return [
+                    'upload_speed' => round($uploadMBps, 3),
+                    'download_speed' => round($downloadMBps, 3),
+                    'total_speed' => round($totalMBps, 3),
+                    'link_speed_mbps' => $linkSpeedMbps,
+                    'utilization_percent' => round($utilizationPercent, 2)
                 ];
             }
         }
@@ -373,413 +388,523 @@ function getNetworkTraffic() {
         error_log("Network traffic exception: " . $e->getMessage());
     }
     
+    return [
+        'upload_speed' => 0.0, 
+        'download_speed' => 0.0, 
+        'total_speed' => 0.0,
+        'link_speed_mbps' => 0,
+        'utilization_percent' => 0.0
+    ];
+}
+
+// ========================================
+// LATENCY MONITORING
+// ========================================
+
+function getLatency() {
+    $host = LATENCY_HOST;
+    
+    try {
+        $startTime = microtime(true);
+        exec("ping -n 1 -w 1000 $host 2>&1", $output, $status);
+        $endTime = microtime(true);
+        
+        if ($status === 0) {
+            foreach ($output as $line) {
+                if (preg_match('/time[=<](\d+)ms/i', $line, $matches)) {
+                    return [
+                        'latency_ms' => (float)$matches[1],
+                        'latency_host' => $host
+                    ];
+                }
+            }
+            
+            $latency = round(($endTime - $startTime) * 1000, 1);
+            if ($latency < 5000) {
+                return [
+                    'latency_ms' => $latency,
+                    'latency_host' => $host
+                ];
+            }
+        }
+    } catch (Exception $e) {
+        error_log("Latency exception: " . $e->getMessage());
+    }
+    
+    return ['latency_ms' => null, 'latency_host' => $host];
+}
+
+// ========================================
+// DISK MONITORING
+// ========================================
+
+function getDiskUsage() {
+    try {
+        if (detectWMIC()) {
+            exec('wmic logicaldisk where "DeviceID=\'C:\'" get FreeSpace,Size /value 2>&1', $output, $status);
+            if ($status === 0) {
+                $free = null;
+                $total = null;
+                
+                foreach ($output as $line) {
+                    if (strpos($line, 'FreeSpace') !== false) {
+                        preg_match('/FreeSpace=(\d+)/', $line, $matches);
+                        if (isset($matches[1])) $free = (float)$matches[1];
+                    }
+                    if (strpos($line, 'Size') !== false && strpos($line, 'FreeSpace') === false) {
+                        preg_match('/Size=(\d+)/', $line, $matches);
+                        if (isset($matches[1])) $total = (float)$matches[1];
+                    }
+                }
+                
+                if ($total !== null && $free !== null && $total > 0) {
+                    $used = $total - $free;
+                    $percentage = ($used / $total) * 100;
+                    
+                    return [
+                        'percentage' => round($percentage, 2),
+                        'used_gb' => round($used / 1024 / 1024 / 1024, 2),
+                        'total_gb' => round($total / 1024 / 1024 / 1024, 2)
+                    ];
+                }
+            }
+        }
+    } catch (Exception $e) {
+        error_log("Disk exception: " . $e->getMessage());
+    }
+    
+    return ['percentage' => 0.0, 'used_gb' => 0.0, 'total_gb' => 0.0];
+}
+
+// ========================================
+// TEMPERATURE MONITORING - MULTI-METHOD
+// ========================================
+
+function getTemperatureLibreHardware() {
+    static $available = null;
+    
+    if ($available === false) return null;
+    
+    try {
+        exec('powershell -Command "Get-WmiObject -Namespace root/LibreHardwareMonitor -Class Sensor -ErrorAction SilentlyContinue | Where-Object {$_.SensorType -eq \'Temperature\' -and ($_.Name -like \'*Package*\' -or $_.Name -like \'*CPU*\')} | Select-Object -First 1 -ExpandProperty Value" 2>&1', $output, $status);
+        
+        if ($status === 0 && !empty($output) && is_numeric(trim($output[0]))) {
+            $temp = (float)trim($output[0]);
+            if ($temp > 0 && $temp < 150) {
+                if ($available === null) {
+                    echo "✓ Temperature: LibreHardwareMonitor\n";
+                }
+                $available = true;
+                return round($temp, 1);
+            }
+        }
+    } catch (Exception $e) {
+        // Silent fail
+    }
+    
+    $available = false;
     return null;
 }
 
-
-// ========================================
-// NEW: LATENCY/PING MONITORING
-// ========================================
-function getLatency() {
-    if (!ENABLE_LATENCY) return null;
+function getTemperatureOpenHardware() {
+    static $available = null;
+    
+    if ($available === false) return null;
     
     try {
-        $host = LATENCY_HOST;
+        exec('powershell -Command "Get-WmiObject -Namespace root/OpenHardwareMonitor -Class Sensor -ErrorAction SilentlyContinue | Where-Object {$_.SensorType -eq \'Temperature\' -and $_.Name -like \'*CPU*\'} | Select-Object -First 1 -ExpandProperty Value" 2>&1', $output, $status);
         
-        // Use ping command (Windows)
-        exec("ping -n 1 -w 1000 $host 2>&1", $output, $status);
+        if ($status === 0 && !empty($output) && is_numeric(trim($output[0]))) {
+            $temp = (float)trim($output[0]);
+            if ($temp > 0 && $temp < 150) {
+                if ($available === null) {
+                    echo "✓ Temperature: OpenHardwareMonitor\n";
+                }
+                $available = true;
+                return round($temp, 1);
+            }
+        }
+    } catch (Exception $e) {
+        // Silent fail
+    }
+    
+    $available = false;
+    return null;
+}
+
+function getTemperatureWMIC() {
+    static $available = null;
+    
+    if ($available === false) return null;
+    
+    try {     
+        exec('wmic /namespace:\\\\root\\wmi PATH MSAcpi_ThermalZoneTemperature get CurrentTemperature /value 2>&1', $output, $status);
         
-        if ($status === 0 && !empty($output)) {
+        if ($status === 0) {
             foreach ($output as $line) {
-                // Look for "time=XXms" or "time<1ms"
-                if (preg_match('/time[=<](\d+)ms/i', $line, $matches)) {
-                    $latency = (float)$matches[1];
-                    
-                    return [
-                        'latency_ms' => $latency,
-                        'host' => $host,
-                        'status' => 'online'
-                    ];
-                }
-                // Alternative format: "Average = XXms"
-                if (preg_match('/Average\s*=\s*(\d+)ms/i', $line, $matches)) {
-                    $latency = (float)$matches[1];
-                    
-                    return [
-                        'latency_ms' => $latency,
-                        'host' => $host,
-                        'status' => 'online'
-                    ];
+                if (strpos($line, 'CurrentTemperature') !== false) {
+                    preg_match('/CurrentTemperature=(\d+)/', $line, $matches);
+                    if (isset($matches[1])) {
+                        $kelvin = (int)$matches[1];
+                        $celsius = ($kelvin / 10) - 273.15;
+                        if ($celsius > 0 && $celsius < 150) {
+                            if ($available === null) {
+                                echo "✓ Temperature: WMIC/ACPI\n";
+                            }
+                            $available = true;
+                            return round($celsius, 1);
+                        }
+                    }
                 }
             }
         }
-        
-        // If ping failed, mark as offline
-        return [
-            'latency_ms' => 999,
-            'host' => $host,
-            'status' => 'offline'
-        ];
-        
     } catch (Exception $e) {
-        error_log("Latency exception: " . $e->getMessage());
-        return [
-            'latency_ms' => 999,
-            'host' => LATENCY_HOST,
-            'status' => 'error'
-        ];
+        // Silent fail
     }
+    
+    $available = false;
+    return null;
+}
+
+function getTemperature() {
+    static $method = null;
+    static $noTempWarningShown = false;
+    
+    if ($method === 'libre') {
+        $temp = getTemperatureLibreHardware();
+        if ($temp !== null) return $temp;
+        $method = null;
+    } elseif ($method === 'open') {
+        $temp = getTemperatureOpenHardware();
+        if ($temp !== null) return $temp;
+        $method = null;
+    } elseif ($method === 'wmic') {
+        $temp = getTemperatureWMIC();
+        if ($temp !== null) return $temp;
+        $method = null;
+    }
+    
+    $temp = getTemperatureLibreHardware();
+    if ($temp !== null) {
+        $method = 'libre';
+        return $temp;
+    }
+    
+    $temp = getTemperatureOpenHardware();
+    if ($temp !== null) {
+        $method = 'open';
+        return $temp;
+    }
+    
+    $temp = getTemperatureWMIC();
+    if ($temp !== null) {
+        $method = 'wmic';
+        return $temp;
+    }
+    
+    if (!$noTempWarningShown) {
+        echo "⚠ Temperature: Not available (install LibreHardwareMonitor)\n";
+        $noTempWarningShown = true;
+    }
+    
+    return null;
 }
 
 // ========================================
-// THRESHOLD LOGIC
+// DATABASE FUNCTIONS
 // ========================================
-function shouldCaptureMetrics($metrics) {
-    global $GLOBALS;
+
+function initializeDatabase() {
+    $db = getDB();
     
-    $currentTime = time();
-    $lastCapture = $GLOBALS['last_capture_time'];
+    // Check if system_metrics has device_id column
+    $result = $db->query("SHOW COLUMNS FROM system_metrics LIKE 'device_id'");
+    $hasDeviceId = ($result && $result->num_rows > 0);
     
-    // DISABLED:     // Force capture after interval
-    // DISABLED:     if ($currentTime - $lastCapture >= FORCE_CAPTURE_INTERVAL) {
-    // DISABLED:         $GLOBALS['last_capture_time'] = $currentTime;
-    // DISABLED:         return ['should_capture' => true, 'reason' => 'Forced capture interval reached'];
-    // DISABLED:     }
-    // DISABLED:     
-    // Check CPU threshold
-    if (!isset($GLOBALS['last_values']['cpu'])) {
-        return ['should_capture' => true, 'reason' => 'First capture'];
+    if ($hasDeviceId) {
+        echo "⚠ Removing device_id foreign key constraint...\n";
+        $db->query("ALTER TABLE system_metrics DROP FOREIGN KEY IF EXISTS system_metrics_ibfk_1");
+        $db->query("ALTER TABLE system_metrics DROP COLUMN device_id");
+        echo "✓ device_id removed\n";
     }
     
-    $cpuChange = abs($metrics['cpu'] - $GLOBALS['last_values']['cpu']);
-    if ($cpuChange >= CPU_THRESHOLD) {
-        $GLOBALS['last_capture_time'] = $currentTime;
-        return ['should_capture' => true, 'reason' => sprintf('CPU changed by %.1f%%', $cpuChange)];
-    }
+    $db->query("CREATE TABLE IF NOT EXISTS system_metrics (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        cpu_usage DECIMAL(5,2),
+        cpu_frequency DECIMAL(5,2),
+        ram_usage DECIMAL(5,2),
+        ram_used_gb DECIMAL(10,2),
+        ram_total_gb DECIMAL(10,2),
+        network_upload_speed DECIMAL(10,3),
+        network_download_speed DECIMAL(10,3),
+        network_total_speed DECIMAL(10,3),
+        network_link_speed INT DEFAULT 0,
+        network_utilization DECIMAL(5,2) DEFAULT 0.00,
+        latency_ms DECIMAL(10,2),
+        latency_host VARCHAR(255),
+        disk_usage DECIMAL(5,2),
+        disk_used_gb DECIMAL(10,2),
+        disk_total_gb DECIMAL(10,2),
+        temperature DECIMAL(5,2),
+        recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_recorded_at (recorded_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
     
-    // Check RAM threshold
-    $ramChange = abs($metrics['ram']['usage'] - $GLOBALS['last_values']['ram']);
-    if ($ramChange >= RAM_THRESHOLD) {
-        $GLOBALS['last_capture_time'] = $currentTime;
-        return ['should_capture' => true, 'reason' => sprintf('RAM changed by %.1f%%', $ramChange)];
-    }
-    
-    // Check network traffic threshold
-    if ($metrics['network'] && isset($GLOBALS['last_values']['network'])) {
-        $networkChange = abs($metrics['network']['total_speed'] - $GLOBALS['last_values']['network']);
-        if ($networkChange >= NETWORK_THRESHOLD) {
-            $GLOBALS['last_capture_time'] = $currentTime;
-            return ['should_capture' => true, 'reason' => sprintf('Network traffic changed by %.2f MB/s', $networkChange)];
-        }
-    }
-    
-    // Check latency threshold
-    if ($metrics['latency'] && isset($GLOBALS['last_values']['latency'])) {
-        $latencyChange = abs($metrics['latency']['latency_ms'] - $GLOBALS['last_values']['latency']);
-        if ($latencyChange >= LATENCY_THRESHOLD) {
-            $GLOBALS['last_capture_time'] = $currentTime;
-            return ['should_capture' => true, 'reason' => sprintf('Latency changed by %.0f ms', $latencyChange)];
-        }
-    }
-    
-    // Check disk threshold
-    if ($metrics['disk'] && isset($GLOBALS['last_values']['disk'])) {
-        $diskChange = abs($metrics['disk']['usage'] - $GLOBALS['last_values']['disk']);
-        if ($diskChange >= DISK_THRESHOLD) {
-            $GLOBALS['last_capture_time'] = $currentTime;
-            return ['should_capture' => true, 'reason' => sprintf('Disk usage changed by %.1f%%', $diskChange)];
-        }
-    }
-    
-    return ['should_capture' => false, 'reason' => 'No significant changes'];
+    echo "✓ Database tables verified\n\n";
 }
 
-function updateLastValues($metrics) {
-    global $GLOBALS;
+function shouldCaptureMetrics($currentMetrics) {
+    static $lastMetrics = null;
     
-    $GLOBALS['last_values']['cpu'] = $metrics['cpu'];
-    $GLOBALS['last_values']['ram'] = $metrics['ram']['usage'];
-    
-    if ($metrics['network']) {
-        $GLOBALS['last_values']['network'] = $metrics['network']['total_speed'];
+    if ($lastMetrics === null) {
+        $lastMetrics = $currentMetrics;
+        return true;
     }
     
-    if ($metrics['latency']) {
-        $GLOBALS['last_values']['latency'] = $metrics['latency']['latency_ms'];
+    $cpuChanged = abs($currentMetrics['cpu_usage'] - $lastMetrics['cpu_usage']) >= CPU_THRESHOLD;
+    $ramChanged = abs($currentMetrics['ram_usage'] - $lastMetrics['ram_usage']) >= RAM_THRESHOLD;
+    $networkChanged = abs($currentMetrics['network_total_speed'] - $lastMetrics['network_total_speed']) >= NETWORK_THRESHOLD;
+    $latencyChanged = abs(($currentMetrics['latency_ms'] ?? 0) - ($lastMetrics['latency_ms'] ?? 0)) >= LATENCY_THRESHOLD;
+    
+    if ($cpuChanged || $ramChanged || $networkChanged || $latencyChanged) {
+        $lastMetrics = $currentMetrics;
+        return true;
     }
     
-    if ($metrics['disk']) {
-        $GLOBALS['last_values']['disk'] = $metrics['disk']['usage'];
+    $timeSinceLastCapture = time() - $GLOBALS['last_capture_time'];
+    if ($timeSinceLastCapture >= 60) {
+        $lastMetrics = $currentMetrics;
+        $GLOBALS['last_capture_time'] = time();
+        return true;
     }
+    
+    return false;
 }
 
-function checkMonitoringTables() {
+function saveMetrics($metrics) {
     try {
         $db = getDB();
         
-        $tables = ['system_metrics', 'devices', 'system_logs'];
-        $allExist = true;
+        $cpu = $db->real_escape_string($metrics['cpu_usage']);
+        $cpuFreq = $db->real_escape_string($metrics['cpu_frequency']);
+        $ramUsage = $db->real_escape_string($metrics['ram_usage']);
+        $ramUsedGB = $db->real_escape_string($metrics['ram_used_gb']);
+        $ramTotalGB = $db->real_escape_string($metrics['ram_total_gb']);
+        $networkUp = $db->real_escape_string($metrics['network_upload_speed']);
+        $networkDown = $db->real_escape_string($metrics['network_download_speed']);
+        $networkTotal = $db->real_escape_string($metrics['network_total_speed']);
+        $linkSpeed = $db->real_escape_string($metrics['network_link_speed']);
+        $utilization = $db->real_escape_string($metrics['network_utilization']);
+        $latency = $metrics['latency_ms'] !== null ? $db->real_escape_string($metrics['latency_ms']) : 'NULL';
+        $latencyHost = $metrics['latency_host'] ? "'" . $db->real_escape_string($metrics['latency_host']) . "'" : 'NULL';
+        $diskUsage = $db->real_escape_string($metrics['disk_usage']);
+        $diskUsedGB = $db->real_escape_string($metrics['disk_used_gb']);
+        $diskTotalGB = $db->real_escape_string($metrics['disk_total_gb']);
+        $temp = $metrics['temperature'] !== null ? $db->real_escape_string($metrics['temperature']) : 'NULL';
         
-        foreach ($tables as $table) {
-            $result = $db->query("SHOW TABLES LIKE '$table'");
-            if (!$result || $result->num_rows == 0) {
-                echo "❌ Table '$table' not found!\n";
-                $allExist = false;
-            }
-        }
-        
-        return $allExist;
-    } catch (Exception $e) {
-        echo "❌ Database error: " . $e->getMessage() . "\n";
-        return false;
-    }
-}
-
-function getOrCreateLocalhostDevice() {
-    try {
-        $db = getDB();
-        $localIP = getLocalIP();
-        $networkInfo = getNetworkInfo();
-        $networkRange = $networkInfo['range'];
-        
-        $safeIP = $db->real_escape_string($localIP);
-        $safeRange = $db->real_escape_string($networkRange);
-        
-        $existing = $db->query("SELECT id FROM devices WHERE ip_address='$safeIP' AND network_range='$safeRange' LIMIT 1");
-        
-        if ($existing && $existing->num_rows > 0) {
-            return $existing->fetch_assoc()['id'];
-        }
-        
-        $hostname = gethostname();
-        $safeName = $db->real_escape_string($hostname ?: "Localhost-Monitor");
-        $mac = getMacFromIP($localIP);
-        $safeMac = $db->real_escape_string($mac);
-        
-        $db->query("INSERT INTO devices (name, ip_address, mac_address, network_range, device_type, status, created_at, last_checked_at, last_seen_at) 
-                   VALUES ('$safeName', '$safeIP', '$safeMac', '$safeRange', 'computer', 'online', NOW(), NOW(), NOW())");
-        
-        $deviceId = $db->insert_id;
-        logToSystem($deviceId, 'INFO', 'monitoring', "Network-aware monitoring started for device: $safeName ($safeIP)");
-        
-        return $deviceId;
-    } catch (Exception $e) {
-        error_log("Get/Create device exception: " . $e->getMessage());
-        return 0;
-    }
-}
-
-function storeMetrics($deviceId, $metrics) {
-    try {
-        $db = getDB();
-        
-        $cpuVal = isset($metrics['cpu']) && $metrics['cpu'] > 0 ? $metrics['cpu'] : 0;
-        $cpuFreqVal = isset($metrics['cpu_freq']['current_ghz']) && $metrics['cpu_freq']['current_ghz'] > 0 ? $metrics['cpu_freq']['current_ghz'] : 'NULL';
-        $ramVal = isset($metrics['ram']['usage']) && $metrics['ram']['usage'] > 0 ? $metrics['ram']['usage'] : 0;
-        $ramUsedMB = isset($metrics['ram']['used_mb']) && $metrics['ram']['used_mb'] > 0 ? $metrics['ram']['used_mb'] : 0;
-        $ramTotalMB = isset($metrics['ram']['total_mb']) && $metrics['ram']['total_mb'] > 0 ? $metrics['ram']['total_mb'] : 0;
-        $ramUsedGB = isset($metrics['ram']['used_gb']) && $metrics['ram']['used_gb'] > 0 ? $metrics['ram']['used_gb'] : 'NULL';
-        $ramTotalGB = isset($metrics['ram']['total_gb']) && $metrics['ram']['total_gb'] > 0 ? $metrics['ram']['total_gb'] : 'NULL';
-        
-        // NEW: Network traffic metrics
-        $uploadSpeed = 'NULL';
-        $downloadSpeed = 'NULL';
-        $totalSpeed = 'NULL';
-        if ($metrics['network'] !== null && is_array($metrics['network'])) {
-            $uploadSpeed = $metrics['network']['upload_speed'];
-            $downloadSpeed = $metrics['network']['download_speed'];
-            $totalSpeed = $metrics['network']['total_speed'];
-        }
-        
-        // NEW: Latency metrics
-        $latencyMs = 'NULL';
-        $latencyHost = 'NULL';
-        if ($metrics['latency'] !== null && is_array($metrics['latency'])) {
-            $latencyMs = $metrics['latency']['latency_ms'];
-            $latencyHost = "'" . $db->real_escape_string($metrics['latency']['host']) . "'";
-        }
-        
-        $diskUsageVal = 'NULL';
-        $diskUsedGB = 'NULL';
-        $diskTotalGB = 'NULL';
-        
-        if ($metrics['disk'] !== null && is_array($metrics['disk'])) {
-            $diskUsageVal = $metrics['disk']['usage'];
-            $diskUsedGB = $metrics['disk']['used_gb'];
-            $diskTotalGB = $metrics['disk']['total_gb'];
-        }
-        
-        // UPDATED SQL with new columns
         $sql = "INSERT INTO system_metrics (
-            device_id, cpu_usage, cpu_frequency, ram_usage, ram_used_mb, ram_total_mb, 
-            ram_used_gb, ram_total_gb, network_upload_speed, network_download_speed, 
-            network_total_speed, latency_ms, latency_host, disk_usage, disk_used_gb, 
-            disk_total_gb, recorded_at
+            cpu_usage, cpu_frequency, ram_usage, ram_used_gb, ram_total_gb,
+            network_upload_speed, network_download_speed, network_total_speed,
+            network_link_speed, network_utilization,
+            latency_ms, latency_host,
+            disk_usage, disk_used_gb, disk_total_gb,
+            temperature, recorded_at
         ) VALUES (
-            $deviceId, $cpuVal, $cpuFreqVal, $ramVal, $ramUsedMB, $ramTotalMB, 
-            $ramUsedGB, $ramTotalGB, $uploadSpeed, $downloadSpeed, $totalSpeed, 
-            $latencyMs, $latencyHost, $diskUsageVal, $diskUsedGB, $diskTotalGB, NOW()
+            '$cpu', '$cpuFreq', '$ramUsage', '$ramUsedGB', '$ramTotalGB',
+            '$networkUp', '$networkDown', '$networkTotal',
+            '$linkSpeed', '$utilization',
+            $latency, $latencyHost,
+            '$diskUsage', '$diskUsedGB', '$diskTotalGB',
+            $temp, NOW()
         )";
         
-        $success = $db->query($sql);
-        
-        if (!$success) {
-            $error = $db->error;
-            error_log("SQL Error: " . $error);
-            echo "❌ Database error: $error\n";
+        if ($db->query($sql)) {
+            return true;
+        } else {
+            error_log("Database error: " . $db->error);
+            return false;
         }
-        
-        return $success;
     } catch (Exception $e) {
-        error_log("Store metrics exception: " . $e->getMessage());
-        echo "❌ Exception: " . $e->getMessage() . "\n";
-        logToSystem($deviceId, 'ERROR', 'monitoring', "Failed to store metrics: " . $e->getMessage());
+        error_log("Save metrics exception: " . $e->getMessage());
         return false;
     }
 }
 
-// WEB TEST MODE
-if (php_sapi_name() !== 'cli') {
-    echo "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n   ENHANCED MONITOR v2.0 - TEST\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
-    echo "🔍 Threshold Configuration:\n";
-    echo "   CPU Threshold: " . CPU_THRESHOLD . "%\n";
-    echo "   RAM Threshold: " . RAM_THRESHOLD . "%\n";
-    echo "   Network Threshold: " . NETWORK_THRESHOLD . " MB/s\n";
-    echo "   Latency Threshold: " . LATENCY_THRESHOLD . " ms\n";
-    echo "   Disk Threshold: " . DISK_THRESHOLD . "%\n";
-    echo "   Force Capture: DISABLED (Pure threshold mode)\n\n";
+// ========================================
+// LOG CLEANUP 
+// ========================================
+
+function cleanupOldLogs() {
+    static $lastCleanup = 0;
     
-    if (!checkMonitoringTables()) exit(1);
-    
-    detectWMIC();
-    $deviceId = getOrCreateLocalhostDevice();
-    
-    $metrics = [
-        'cpu' => getCPUUsage(),
-        'cpu_freq' => getCPUFrequency(),
-        'ram' => getRAMUsage(),
-        'network' => getNetworkTraffic(),
-        'latency' => getLatency(),
-        'disk' => getDiskUsage()
-    ];
-    
-    echo "📊 Current Metrics:\n";
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-    echo "   CPU: " . $metrics['cpu'] . "% @ " . $metrics['cpu_freq']['current_ghz'] . " GHz\n";
-    echo "   RAM: " . $metrics['ram']['usage'] . "% (" . $metrics['ram']['used_gb'] . " GB / " . $metrics['ram']['total_gb'] . " GB)\n";
-    
-    if ($metrics['network']) {
-        echo "   Network: ↑ " . $metrics['network']['upload_speed'] . " MB/s | ↓ " . $metrics['network']['download_speed'] . " MB/s\n";
+    // Only run cleanup once per hour
+    $now = time();
+    if ($now - $lastCleanup < 3600) {
+        return;
     }
     
-    if ($metrics['latency']) {
-        echo "   Latency: " . $metrics['latency']['latency_ms'] . " ms (to " . $metrics['latency']['host'] . ")\n";
+    $lastCleanup = $now;
+    
+    try {
+        $db = getDB();
+        
+        // Delete logs older than 2 days
+        $result = $db->query("DELETE FROM system_logs 
+                              WHERE created_at < DATE_SUB(NOW(), INTERVAL 2 DAY)");
+        
+        if ($result) {
+            $deletedCount = $db->affected_rows;
+            if ($deletedCount > 0) {
+                echo "  🗑️  Cleaned up $deletedCount old log entries (>2 days)\n";
+                logToSystem(null, 'INFO', 'maintenance', "Cleaned up $deletedCount old log entries");
+            }
+        }
+    } catch (Exception $e) {
+        error_log("Log cleanup exception: " . $e->getMessage());
     }
-    
-    if ($metrics['disk']) {
-        echo "   Disk: " . $metrics['disk']['usage'] . "% (" . $metrics['disk']['used_gb'] . " GB / " . $metrics['disk']['total_gb'] . " GB)\n";
-    }
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
-    
-    echo "💾 Testing threshold logic...\n";
-    $decision = shouldCaptureMetrics($metrics);
-    echo "Decision: " . ($decision['should_capture'] ? '✅ CAPTURE' : '⏭️  SKIP') . " - " . $decision['reason'] . "\n\n";
-    
-    echo storeMetrics($deviceId, $metrics) ? "✅ Metrics stored successfully!\n" : "❌ Failed to store metrics\n";
-    exit(0);
 }
 
-// CLI MODE - THRESHOLD-BASED MONITORING
-echo "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n";
-echo "   ENHANCED SYSTEM MONITOR v2.0\n";
-echo "   Network Traffic + Latency Monitoring\n";
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n";
-echo "⚙️  Configuration:\n";
-echo "   Check Interval: " . CHECK_INTERVAL . " seconds (lightweight)\n";
-echo "   CPU Threshold: " . CPU_THRESHOLD . "%\n";
-echo "   RAM Threshold: " . RAM_THRESHOLD . "%\n";
-echo "   Network Threshold: " . NETWORK_THRESHOLD . " MB/s\n";
-echo "   Latency Threshold: " . LATENCY_THRESHOLD . " ms\n";
-echo "   Latency Host: " . LATENCY_HOST . "\n";
-echo "   Disk Threshold: " . DISK_THRESHOLD . "%\n";
-echo "   Force Capture: DISABLED (Pure threshold mode)\n\n";
+// ========================================
+// MAIN MONITORING LOOP
+// ========================================
 
-if (!checkMonitoringTables()) exit(1);
-echo "✅ All monitoring tables verified\n\n";
-
-detectWMIC();
-$deviceId = getOrCreateLocalhostDevice();
-$loop = 0;
-$captures = 0;
-$skips = 0;
-
-logToSystem($deviceId, 'INFO', 'system', "Enhanced monitoring started - Network Traffic + Latency enabled");
-
-echo "🚀 Monitoring started...\n\n";
-
-while (true) {
-    $loop++;
-    $loopStart = microtime(true);
+function monitorSystem() {
+    initializeDatabase();
     
-    $metrics = [
-        'cpu' => getCPUUsage(),
-        'cpu_freq' => getCPUFrequency(),
-        'ram' => getRAMUsage(),
-        'network' => getNetworkTraffic(),
-        'latency' => getLatency(),
-        'disk' => getDiskUsage()
-    ];
+    echo "Starting monitoring loop...\n";
+    echo "PID: " . getmypid() . "\n";
+    echo "Memory Limit: " . ini_get('memory_limit') . "\n";
+    echo "Update interval: " . CHECK_INTERVAL . " seconds\n";
+    echo "Network method: HYBRID (Get-NetAdapterStatistics + Performance Counter)\n";
+    echo "Temperature: MULTI-METHOD (LibreHardware/OpenHardware/WMIC)\n";
+    echo "Log retention: 2 days (auto-cleanup enabled)\n";
+    echo "Press Ctrl+C to stop\n\n";
     
-    // Check if we should capture
-    $decision = shouldCaptureMetrics($metrics);
+    logToSystem(null, 'INFO', 'monitoring', 'System monitoring started successfully.');
     
-    if ($decision['should_capture']) {
-        $captures++;
-        echo "Check #$loop [" . date('H:i:s') . "] - ✅ CAPTURED\n";
-        echo "   CPU: " . $metrics['cpu'] . "% | RAM: " . $metrics['ram']['usage'] . "%";
-        
-        if ($metrics['network']) {
-            echo " | Net: ↑" . $metrics['network']['upload_speed'] . " ↓" . $metrics['network']['download_speed'] . " MB/s";
-        }
-        
-        if ($metrics['latency']) {
-            echo " | Ping: " . $metrics['latency']['latency_ms'] . "ms";
-        }
-        
-        echo "\n";
-        echo "   Reason: " . $decision['reason'] . "\n";
-        
-        if (storeMetrics($deviceId, $metrics)) {
-            updateLastValues($metrics);
+    // Run initial cleanup
+    cleanupOldLogs();
+    
+    $iteration = 0;
+    $consecutiveErrors = 0;
+    
+    while (true) {
+        try {
+            $iteration++;
+            $startTime = microtime(true);
             
-            if (ENABLE_DETAILED_LOGGING) {
-                logToSystem($deviceId, 'INFO', 'monitoring', "Metrics captured - " . $decision['reason']);
-            }
-        } else {
-            echo "   ❌ Failed to store\n";
-        }
-        echo "\n";
-    } else {
-        $skips++;
-        if ($loop % 12 == 0) { // Show skip status every minute
-            echo "Check #$loop [" . date('H:i:s') . "] - ⏭️  Skipped (no significant change) - CPU: " . $metrics['cpu'] . "%, RAM: " . $metrics['ram']['usage'] . "%";
+            // Update heartbeat EVERY iteration 
+            updateHeartbeat();
             
-            if ($metrics['network']) {
-                echo ", Net: " . $metrics['network']['total_speed'] . " MB/s";
+            // Run cleanup periodically (every hour)
+            if ($iteration % (3600 / CHECK_INTERVAL) == 0) {
+                cleanupOldLogs();
             }
             
-            if ($metrics['latency']) {
-                echo ", Ping: " . $metrics['latency']['latency_ms'] . "ms";
+            echo "[" . date('Y-m-d H:i:s') . "] Iteration #$iteration (PID: " . getmypid() . ")\n";
+            
+            // ✅ MEMORY USAGE TRACKING
+            $memUsed = round(memory_get_usage() / 1024 / 1024, 2);
+            $memPeak = round(memory_get_peak_usage() / 1024 / 1024, 2);
+            echo "  Memory: {$memUsed}MB / Peak: {$memPeak}MB\n";
+            
+            // Collect all metrics
+            $cpu = getCPUUsage();
+            $cpuFreq = getCPUFrequency();
+            $ram = getRAMUsage();
+            $network = getNetworkTrafficTaskManager();
+            $latency = ENABLE_LATENCY ? getLatency() : ['latency_ms' => null, 'latency_host' => null];
+            $disk = ENABLE_DISK ? getDiskUsage() : ['percentage' => 0.0, 'used_gb' => 0.0, 'total_gb' => 0.0];
+            $temp = getTemperature();
+            
+            $metrics = [
+                'cpu_usage' => $cpu,
+                'cpu_frequency' => $cpuFreq,
+                'ram_usage' => $ram['percentage'],
+                'ram_used_gb' => $ram['used_gb'],
+                'ram_total_gb' => $ram['total_gb'],
+                'network_upload_speed' => $network['upload_speed'],
+                'network_download_speed' => $network['download_speed'],
+                'network_total_speed' => $network['total_speed'],
+                'network_link_speed' => $network['link_speed_mbps'],
+                'network_utilization' => $network['utilization_percent'],
+                'latency_ms' => $latency['latency_ms'],
+                'latency_host' => $latency['latency_host'],
+                'disk_usage' => $disk['percentage'],
+                'disk_used_gb' => $disk['used_gb'],
+                'disk_total_gb' => $disk['total_gb'],
+                'temperature' => $temp
+            ];
+            
+            // Display metrics
+            echo sprintf("  CPU: %.1f%% @ %.2f GHz\n", $cpu, $cpuFreq);
+            echo sprintf("  RAM: %.1f%% (%.2f GB / %.2f GB)\n", $ram['percentage'], $ram['used_gb'], $ram['total_gb']);
+            echo sprintf("  Network: %.3f MB/s (↑%.3f ↓%.3f) | Link: %d Mbps | Util: %.2f%%\n", 
+                $network['total_speed'], $network['upload_speed'], $network['download_speed'],
+                $network['link_speed_mbps'], $network['utilization_percent']);
+            
+            if ($latency['latency_ms'] !== null) {
+                echo sprintf("  Latency: %.1f ms (%s)\n", $latency['latency_ms'], $latency['latency_host']);
             }
             
-            echo "\n";
-            echo "   Stats: " . $captures . " captured, " . $skips . " skipped (" . round(($skips/($captures+$skips))*100, 1) . "% resource savings)\n\n";
+            if (ENABLE_DISK) {
+                echo sprintf("  Disk: %.2f%% (%.2f GB / %.2f GB)\n", $disk['percentage'], $disk['used_gb'], $disk['total_gb']);
+            }
+            
+            if ($temp !== null) {
+                echo sprintf("  Temperature: %.1f°C\n", $temp);
+            }
+            
+            // Save metrics if needed
+            if (shouldCaptureMetrics($metrics)) {
+                if (saveMetrics($metrics)) {
+                    echo "  ✓ Metrics saved to database\n";
+                    $consecutiveErrors = 0;
+                } else {
+                    echo "  ✗ Failed to save metrics\n";
+                    $consecutiveErrors++;
+                }
+            } else {
+                echo "  ⊘ Skipped (no significant changes)\n";
+            }
+            
+            $endTime = microtime(true);
+            $elapsed = $endTime - $startTime;
+            
+            echo sprintf("  Execution time: %.2f seconds\n", $elapsed);
+            echo sprintf("  Heartbeat updated: %s\n\n", date('H:i:s'));
+            
+            // ✅ MEMORY WARNING
+            if ($memPeak > 800) {
+                echo "  ⚠️  WARNING: Memory usage approaching limit! ({$memPeak}MB / 1024MB)\n\n";
+                logToSystem(null, 'WARNING', 'monitoring', "High memory usage: {$memPeak}MB");
+            }
+            
+        } catch (Exception $e) {
+            echo "ERROR in iteration: " . $e->getMessage() . "\n\n";
+            logToSystem(null, 'ERROR', 'monitoring', 'System monitoring iteration error: ' . $e->getMessage());
+            $consecutiveErrors++;
+            
+            if ($consecutiveErrors >= 10) {
+                logToSystem(null, 'CRITICAL', 'monitoring', 'System monitor experiencing repeated errors!');
+                echo "  ⚠ CRITICAL: {$consecutiveErrors} consecutive errors - but still running!\n\n";
+                $consecutiveErrors = 0;
+            }
         }
+        
+        sleep(CHECK_INTERVAL);
     }
-    
-    $elapsed = microtime(true) - $loopStart;
-    $sleep = max(0, CHECK_INTERVAL - $elapsed);
-    
-    sleep((int)$sleep);
+}
+
+// ========================================
+// START MONITORING
+// ========================================
+
+try {
+    monitorSystem();
+} catch (Exception $e) {
+    echo "FATAL ERROR: " . $e->getMessage() . "\n";
+    logToSystem(null, 'CRITICAL', 'monitoring', 'System monitoring crashed: ' . $e->getMessage());
+    exit(1);
 }
 ?>

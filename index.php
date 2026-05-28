@@ -1,1585 +1,298 @@
-<?php
-require_once 'config.php';
-
-$yourIP = getLocalIP();
-$uptimeKumaStatus = isUptimeKumaRunning();
-
-$parts = explode('.', $yourIP);
-$networkRange = $parts[0] . '.' . $parts[1] . '.' . $parts[2] . '.0/24';
-?>
+<?php require_once 'config.php'; ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Network Monitor - Device Tracker</title>
-    <link rel="icon" href="data:image/svg+xml,
-        <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'>
-        <text y='1.0em' font-size='85'>🌐</text>
-        </svg>">
-
-    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <!-- Bootstrap Icons -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
-    <!-- jsPDF for PDF export -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.31/jspdf.plugin.autotable.min.js"></script>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
-        /* Theme Variables */
-        :root {
-            --bg-primary: #000000;
-            --bg-secondary: #0f0f0f;
-            --bg-tertiary: #0a0a0a;
-            --border-color: #1a1a1a;
-            --border-hover: #333;
-            --text-primary: #ffffff;
-            --text-secondary: #666;
-            --text-tertiary: #444;
-        }
-
-        /* Light Theme */
-        body.light-mode {
-            --bg-primary: #ffffff;
-            --bg-secondary: #f5f5f5;
-            --bg-tertiary: #fafafa;
-            --border-color: #e0e0e0;
-            --border-hover: #d0d0d0;
-            --text-primary: #000000;
-            --text-secondary: #666666;
-            --text-tertiary: #999999;
-        }
-        
-        body {
-            font-family: 'Montserrat', sans-serif;
-            background: var(--bg-primary);
-            color: var(--text-primary);
-            overflow-x: hidden;
-            transition: background 0.3s ease, color 0.3s ease;
-        }
-        
-        /* Theme Toggle Button - Hides on scroll */
-        .theme-toggle {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            z-index: 1001;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            padding: 12px 16px;
-            border-radius: 8px;
-            cursor: pointer;
-            color: var(--text-primary);
-            font-size: 20px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-family: 'Montserrat', sans-serif;
-            font-weight: 600;
-            transition: all 0.3s ease;
-            opacity: 1;
-            transform: translateY(0);
-        }
-
-        .theme-toggle.hidden {
-            opacity: 0;
-            transform: translateY(-20px);
-            pointer-events: none;
-        }
-
-        .theme-toggle:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
-        }
-
-        .theme-toggle.hidden:hover {
-            transform: translateY(-20px);
-        }
-
-        .theme-toggle span {
-            font-size: 13px;
-            display: none;
-        }
-
-        @media (min-width: 768px) {
-            .theme-toggle span {
-                display: inline;
-            }
-        }
-        
-        /* Layout */
-        .app-container {
-            display: flex;
-            min-height: 100vh;
-        }
-        
-        /* Sidebar */
-        .sidebar {
-            width: 320px;
-            background: var(--bg-primary);
-            border-right: 1px solid var(--border-color);
-            display: flex;
-            flex-direction: column;
-            position: fixed;
-            left: 0;
-            top: 0;
-            bottom: 0;
-            z-index: 100;
-            transition: transform 0.3s ease, background 0.3s ease, border-color 0.3s ease;
-        }
-        
-        .sidebar-header {
-            padding: 24px;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        .sidebar-header h1 {
-            font-size: 20px;
-            font-weight: 800;
-            margin-bottom: 4px;
-        }
-        
-        .sidebar-header p {
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-        
-        /* Sidebar Stats */
-        .sidebar-stats {
-            padding: 16px 24px;
-            background: var(--bg-tertiary);
-            border-bottom: 1px solid var(--border-color);
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 12px;
-            transition: background 0.3s ease;
-        }
-        
-        .sidebar-stat {
-            text-align: center;
-        }
-        
-        .sidebar-stat-value {
-            font-size: 24px;
-            font-weight: 800;
-            display: block;
-        }
-        
-        .sidebar-stat-value.total { color: #667eea; }
-        .sidebar-stat-value.online { color: #10b981; }
-        .sidebar-stat-value.offline { color: #ef4444; }
-        
-        .sidebar-stat-label {
-            font-size: 10px;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-top: 4px;
-            display: block;
-        }
-        
-        /* Sidebar Filter Dropdown */
-        .sidebar-filter {
-            padding: 16px 24px;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        .filter-dropdown {
-            position: relative;
-        }
-        
-        .filter-select {
-            width: 100%;
-            padding: 12px 14px;
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            color: var(--text-primary);
-            font-family: 'Montserrat', sans-serif;
-            font-size: 13px;
-            font-weight: 600;
-            cursor: pointer;
-            appearance: none;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23666' d='M6 9L1 4h10z'/%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: right 14px center;
-            padding-right: 40px;
-            transition: all 0.3s ease;
-        }
-        
-        .filter-select:focus {
-            outline: none;
-            border-color: var(--border-hover);
-        }
-        
-        .filter-select option {
-            background: var(--bg-tertiary);
-            color: var(--text-primary);
-            padding: 10px;
-        }
-        
-        /* Search Box */
-        .sidebar-search {
-            padding: 16px 24px;
-            border-bottom: 1px solid var(--border-color);
-        }
-        
-        .search-input {
-            width: 100%;
-            padding: 10px 14px 10px 40px;
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            color: var(--text-primary);
-            font-family: 'Montserrat', sans-serif;
-            font-size: 13px;
-            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%23666' viewBox='0 0 16 16'%3E%3Cpath d='M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z'/%3E%3C/svg%3E");
-            background-repeat: no-repeat;
-            background-position: 14px center;
-            transition: all 0.3s ease;
-        }
-        
-        .search-input:focus {
-            outline: none;
-            border-color: var(--border-hover);
-        }
-        
-        .search-input::placeholder {
-            color: var(--text-secondary);
-        }
-        
-        /* Device List */
-        .sidebar-devices {
-            flex: 1;
-            overflow-y: auto;
-            padding: 8px;
-        }
-        
-        .sidebar-device {
-            padding: 12px 16px;
-            margin-bottom: 4px;
-            background: var(--bg-tertiary);
-            border: 1px solid transparent;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.2s;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-        
-        .sidebar-device:hover {
-            background: var(--bg-secondary);
-            border-color: var(--border-color);
-            transform: translateX(4px);
-        }
-        
-        .sidebar-device.active {
-            background: var(--bg-secondary);
-            border-color: #667eea;
-        }
-        
-        .sidebar-device-icon {
-            font-size: 20px;
-            width: 32px;
-            height: 32px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            background: var(--bg-primary);
-            border-radius: 6px;
-            flex-shrink: 0;
-        }
-        
-        .sidebar-device-info {
-            flex: 1;
-            min-width: 0;
-        }
-        
-        .sidebar-device-name {
-            font-size: 13px;
-            font-weight: 700;
-            margin-bottom: 2px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-        
-        .sidebar-device-ip {
-            font-size: 11px;
-            color: var(--text-secondary);
-            font-family: 'Courier New', monospace;
-        }
-        
-        .sidebar-device-status {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            flex-shrink: 0;
-        }
-        
-        .sidebar-device-status.online {
-            background: #10b981;
-            box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
-        }
-        
-        .sidebar-device-status.offline {
-            background: #ef4444;
-            box-shadow: 0 0 8px rgba(239, 68, 68, 0.3);
-        }
-        
-        /* Main Content */
-        .main-content {
-            flex: 1;
-            margin-left: 320px;
-            padding: 24px;
-            transition: margin-left 0.3s ease;
-        }
-        
-        /* Header */
-        .header {
-            margin-bottom: 32px;
-        }
-        
-        .header-title {
-            font-size: 28px;
-            font-weight: 800;
-            margin-bottom: 8px;
-        }
-        
-        .header-subtitle {
-            font-size: 14px;
-            color: var(--text-secondary);
-        }
-        
-        /* Network Info */
-        .network-info {
-            background: var(--bg-secondary);
-            padding: 24px;
-            border-radius: 12px;
-            border: 1px solid var(--border-color);
-            margin-bottom: 32px;
-            transition: all 0.3s ease;
-        }
-        
-        .network-info h2 {
-            font-size: 14px;
-            margin-bottom: 16px;
-            color: #667eea;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-        }
-        
-        .network-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 16px;
-        }
-        
-        .network-item {
-            background: var(--bg-primary);
-            padding: 16px;
-            border-radius: 8px;
-            border: 1px solid var(--border-color);
-            transition: all 0.3s ease;
-        }
-        
-        .network-label {
-            font-size: 10px;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            margin-bottom: 8px;
-            letter-spacing: 1px;
-        }
-        
-        .network-value {
-            font-size: 16px;
-            font-weight: 700;
-            font-family: 'Courier New', monospace;
-        }
-        
-        /* Controls */
-        .controls {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 32px;
-            gap: 20px;
-            flex-wrap: wrap;
-        }
-        
-        /* Filter Buttons */
-        .filters {
-            display: flex;
-            gap: 8px;
-            background: var(--bg-secondary);
-            padding: 6px;
-            border-radius: 10px;
-            border: 1px solid var(--border-color);
-            transition: all 0.3s ease;
-            flex-wrap: wrap;
-        }
-        
-        .filter-btn {
-            padding: 10px 24px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-family: 'Montserrat', sans-serif;
-            font-size: 12px;
-            font-weight: 700;
-            text-transform: uppercase;
-            background: transparent;
-            color: var(--text-secondary);
-            transition: all 0.2s;
-            white-space: nowrap;
-        }
-        
-        .filter-btn:hover {
-            color: var(--text-primary);
-        }
-        
-        .filter-btn.active {
-            background: var(--text-primary);
-            color: var(--bg-primary);
-        }
-        
-        .filter-btn.active.online {
-            background: #10b981;
-            color: #ffffff;
-        }
-        
-        .filter-btn.active.offline {
-            background: #ef4444;
-            color: #ffffff;
-        }
-        
-        /* Actions - Responsive */
-        .actions {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 12px;
-            margin-bottom: 32px;
-        }
-        
-        .btn {
-            padding: 14px 20px;
-            border: none;
-            border-radius: 10px;
-            cursor: pointer;
-            font-family: 'Montserrat', sans-serif;
-            font-size: 13px;
-            font-weight: 700;
-            text-transform: uppercase;
-            transition: all 0.2s;
-            text-decoration: none;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            text-align: center;
-        }
-        
-        .btn-primary {
-            background: var(--bg-secondary);
-            color: var(--text-primary);
-            border: 1px solid var(--border-color);
-        }
-        
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 24px rgba(102, 126, 234, 0.3);
-        }
-        
-        .btn-primary:disabled {
-            background: var(--text-tertiary);
-            color: var(--text-secondary);
-            cursor: not-allowed;
-            transform: none;
-        }
-        
-        .btn-secondary {
-            background: var(--bg-secondary);
-            color: var(--text-primary);
-            border: 1px solid var(--border-color);
-        }
-        
-        .btn-secondary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 24px rgba(102, 126, 234, 0.3);
-        }
-        
-        /* Device Grid */
-        .devices-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-            gap: 16px;
-        }
-        
-        .device-card {
-            background: var(--bg-secondary);
-            border-radius: 12px;
-            padding: 24px;
-            border-left: 3px solid #10b981;
-            border-top: 1px solid var(--border-color);
-            border-right: 1px solid var(--border-color);
-            border-bottom: 1px solid var(--border-color);
-            animation: slideIn 0.4s ease-out;
-            transition: all 0.3s;
-            scroll-margin-top: 20px;
-        }
-        
-        .device-card:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 8px 32px rgba(16, 185, 129, 0.1);
-        }
-        
-        .device-card.offline {
-            border-left-color: #ef4444;
-            opacity: 0.7;
-        }
-        
-        .device-card.hidden {
-            display: none;
-        }
-        
-        .device-card.highlight {
-            border-color: #667eea;
-            box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.3);
-        }
-        
-        @keyframes slideIn {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        
-        .device-header {
-            margin-bottom: 20px;
-        }
-        
-        .device-name-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: start;
-            margin-bottom: 8px;
-        }
-        
-        .device-name {
-            font-size: 20px;
-            font-weight: 800;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .device-vendor {
-            font-size: 11px;
-            color: var(--text-secondary);
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-        
-        .status-badge {
-            padding: 6px 12px;
-            border-radius: 6px;
-            font-size: 10px;
-            font-weight: 700;
-            text-transform: uppercase;
-            white-space: nowrap;
-        }
-        
-        .status-badge.online {
-            background: rgba(16, 185, 129, 0.1);
-            border: 1px solid rgba(16, 185, 129, 0.3);
-            color: #10b981;
-        }
-        
-        .status-badge.offline {
-            background: rgba(239, 68, 68, 0.1);
-            border: 1px solid rgba(239, 68, 68, 0.3);
-            color: #ef4444;
-        }
-        
-        .device-info {
-            margin-bottom: 0;
-        }
-        
-        .info-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 10px 0;
-            border-bottom: 1px solid var(--border-color);
-            font-size: 12px;
-        }
-        
-        .info-row:last-child {
-            border-bottom: none;
-        }
-        
-        .info-label {
-            color: var(--text-secondary);
-            font-weight: 600;
-            text-transform: uppercase;
-            font-size: 10px;
-            letter-spacing: 0.5px;
-        }
-        
-        .info-value {
-            color: var(--text-primary);
-            font-weight: 700;
-            font-family: 'Courier New', monospace;
-            font-size: 11px;
-        }
-        
-        /* Scanning indicator */
-        .scanning-indicator {
-            position: fixed;
-            top: 80px;
-            right: 20px;
-            background: var(--bg-secondary);
-            border: 1px solid #667eea;
-            border-radius: 8px;
-            padding: 16px 24px;
-            display: none;
-            align-items: center;
-            gap: 12px;
-            z-index: 1000;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
-            transition: all 0.3s ease;
-        }
-        
-        .scanning-indicator.active {
-            display: flex;
-        }
-        
-        .spinner {
-            width: 20px;
-            height: 20px;
-            border: 3px solid var(--border-color);
-            border-top-color: #667eea;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-        }
-        
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        
-        .empty-state {
-            grid-column: 1 / -1;
-            text-align: center;
-            padding: 80px 20px;
-            background: var(--bg-secondary);
-            border-radius: 12px;
-            border: 2px dashed var(--border-color);
-            transition: all 0.3s ease;
-        }
-        
-        .empty-state h2 {
-            font-size: 20px;
-            color: var(--text-secondary);
-            margin-bottom: 8px;
-        }
-        
-        .empty-state p {
-            color: var(--text-tertiary);
-            font-size: 14px;
-        }
-        
-        /* Mobile Menu Button */
-        .mobile-menu-btn {
-            display: none;
-            position: fixed;
-            top: 20px;
-            left: 20px;
-            z-index: 101;
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            padding: 12px;
-            border-radius: 8px;
-            cursor: pointer;
-            color: var(--text-primary);
-            font-size: 20px;
-            width: 44px;
-            height: 44px;
-            align-items: center;
-            justify-content: center;
-            transition: all 0.3s ease;
-        }
-        
-        .mobile-menu-btn:hover {
-            background: var(--bg-tertiary);
-        }
-        
-        /* Mobile Responsive */
-        @media (max-width: 1024px) {
-            .sidebar {
-                width: 280px;
-            }
-            
-            .main-content {
-                margin-left: 280px;
-            }
-        }
-        
-        @media (max-width: 768px) {
-            .sidebar {
-                transform: translateX(-100%);
-            }
-            
-            .sidebar.mobile-open {
-                transform: translateX(0);
-            }
-            
-            .main-content {
-                margin-left: 0;
-                padding: 80px 16px 16px 16px;
-            }
-            
-            .mobile-menu-btn {
-                display: flex;
-            }
-            
-            .devices-grid {
-                grid-template-columns: 1fr;
-            }
-            
-            .theme-toggle {
-                top: 20px;
-                right: 80px;
-            }
-            
-            .actions {
-                grid-template-columns: 1fr;
-            }
-            
-            .filter-btn {
-                padding: 8px 16px;
-                font-size: 11px;
-            }
-        }
-        
-        @media (max-width: 480px) {
-            .actions {
-                grid-template-columns: 1fr;
-            }
-            
-            .btn {
-                font-size: 12px;
-                padding: 12px 16px;
-            }
-        }
-
-        /* Custom Modal/Popup */
-        .custom-modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.7);
-            z-index: 9999;
-            align-items: center;
-            justify-content: center;
-            backdrop-filter: blur(5px);
-            animation: fadeIn 0.2s ease;
-        }
-        
-        .custom-modal.show {
-            display: flex;
-        }
-        
-        .modal-content {
-            background: var(--bg-secondary);
-            border: 1px solid var(--border-color);
-            border-radius: 12px;
-            padding: 32px;
-            max-width: 500px;
-            width: 90%;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
-            animation: slideUp 0.3s ease;
-        }
-        
-        .modal-icon {
-            font-size: 48px;
-            margin-bottom: 16px;
-            text-align: center;
-        }
-        
-        .modal-title {
-            font-size: 20px;
-            font-weight: 800;
-            margin-bottom: 12px;
-            text-align: center;
-            color: var(--text-primary);
-        }
-        
-        .modal-message {
-            font-size: 14px;
-            color: var(--text-secondary);
-            text-align: center;
-            margin-bottom: 24px;
-            line-height: 1.6;
-        }
-        
-        .modal-buttons {
-            display: flex;
-            gap: 12px;
-            justify-content: center;
-        }
-        
-        .modal-btn {
-            padding: 12px 32px;
-            border: none;
-            border-radius: 8px;
-            font-family: 'Montserrat', sans-serif;
-            font-size: 14px;
-            font-weight: 700;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        
-        .modal-btn-primary {
-            background: #667eea;
-            color: #ffffff;
-        }
-        
-        .modal-btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 8px 24px rgba(102, 126, 234, 0.3);
-        }
-        
-        @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
-        }
-        
-        @keyframes slideUp {
-            from { transform: translateY(30px); opacity: 0; }
-            to { transform: translateY(0); opacity: 1; }
-        }
-
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Network Monitor - SafeG</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='1.0em' font-size='85'>🌐</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+:root{--bg-primary:#000;--bg-secondary:#0f0f0f;--bg-tertiary:#0a0a0a;--border-color:#1a1a1a;--border-hover:#333;--text-primary:#fff;--text-secondary:#888;--text-muted:#555;--critical:#ff4757;--high:#ffa502;--medium:#3742fa;--low:#2ed573;--accent:#667eea;}
+body.light-mode{--bg-primary:#f5f5f5;--bg-secondary:#fff;--bg-tertiary:#f0f0f0;--border-color:#e0e0e0;--border-hover:#ccc;--text-primary:#111;--text-secondary:#666;--text-muted:#aaa;}
+body{font-family:'Montserrat',sans-serif;background:var(--bg-primary);color:var(--text-primary);min-height:100vh;}
+.sidebar{position:fixed;left:0;top:0;width:220px;height:100vh;background:var(--bg-secondary);border-right:1px solid var(--border-color);display:flex;flex-direction:column;z-index:100;overflow-y:auto;}
+.sidebar-brand{padding:18px 16px;border-bottom:1px solid var(--border-color);}
+.sidebar-brand h2{font-size:13px;font-weight:700;}
+.sidebar-brand p{font-size:10px;color:var(--text-secondary);margin-top:2px;}
+.nav-group-label{font-size:9px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:1.5px;padding:12px 14px 4px;}
+.nav-item{display:flex;align-items:center;gap:9px;padding:8px 12px;border-radius:6px;text-decoration:none;color:var(--text-secondary);font-size:12px;font-weight:500;margin:1px 6px;transition:all .15s;}
+.nav-item:hover{background:var(--bg-tertiary);color:var(--text-primary);}
+.nav-item.active{background:rgba(102,126,234,.1);color:var(--accent);border:1px solid rgba(102,126,234,.2);}
+.nav-item i{font-size:13px;width:16px;text-align:center;}
+.sidebar-stats{padding:10px 12px;border-top:1px solid var(--border-color);margin-top:auto;}
+.sidebar-stats-title{font-size:9px;font-weight:700;color:var(--text-muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;}
+.ss-row{display:flex;align-items:center;justify-content:space-between;padding:4px 6px;border-radius:4px;font-size:11px;margin-bottom:2px;}
+.ss-row:hover{background:var(--bg-tertiary);}
+.sidebar-devices{border-top:1px solid var(--border-color);overflow-y:auto;max-height:220px;}
+.sd-item{display:flex;align-items:center;gap:8px;padding:7px 12px;cursor:pointer;font-size:11px;transition:background .15s;border-bottom:1px solid var(--border-color);}
+.sd-item:hover{background:var(--bg-tertiary);}
+.sd-name{font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.sd-ip{font-size:10px;color:var(--text-muted);}
+.sd-dot{width:6px;height:6px;border-radius:50%;flex-shrink:0;}
+.sd-dot.online{background:var(--low);}
+.sd-dot.offline{background:var(--critical);}
+.main{margin-left:220px;padding:24px;}
+.topbar{display:flex;align-items:center;gap:12px;margin-bottom:22px;flex-wrap:wrap;}
+.page-title{font-size:20px;font-weight:800;}
+.page-subtitle{font-size:11px;color:var(--text-secondary);margin-top:2px;}
+.topbar-right{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 14px;border-radius:6px;font-family:'Montserrat',sans-serif;font-size:12px;font-weight:600;cursor:pointer;border:none;transition:all .15s;}
+.btn-accent{background:var(--accent);color:#fff;} .btn-accent:hover{opacity:.85;}
+.btn-ghost{background:transparent;border:1px solid var(--border-color);color:var(--text-secondary);} .btn-ghost:hover{border-color:var(--border-hover);color:var(--text-primary);}
+.btn-sm{padding:6px 10px;font-size:11px;}
+.icon-btn{background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;padding:7px 10px;cursor:pointer;color:var(--text-primary);font-size:14px;}
+.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;margin-bottom:22px;}
+.stat-card{background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;padding:14px 16px;position:relative;overflow:hidden;}
+.stat-card::after{content:'';position:absolute;bottom:0;left:0;right:0;height:2px;}
+.sc-blue::after{background:var(--medium);}
+.sc-green::after{background:var(--low);}
+.sc-red::after{background:var(--critical);}
+.sc-purple::after{background:var(--accent);}
+.stat-num{font-size:28px;font-weight:800;line-height:1;margin-bottom:4px;}
+.stat-label{font-size:10px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.4px;}
+.filters-bar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;}
+.filter-btn{background:var(--bg-secondary);border:1px solid var(--border-color);color:var(--text-secondary);padding:6px 14px;border-radius:6px;font-family:'Montserrat',sans-serif;font-size:11px;font-weight:700;cursor:pointer;transition:all .15s;}
+.filter-btn:hover,.filter-btn.active{border-color:var(--accent);color:var(--accent);}
+.filter-btn.online.active{border-color:var(--low);color:var(--low);}
+.filter-btn.offline.active{border-color:var(--critical);color:var(--critical);}
+.devices-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;}
+.dev-card{background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:8px;padding:16px;border-left:3px solid var(--border-color);transition:all .2s;animation:fadeIn .3s ease;}
+@keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.dev-card.online{border-left-color:var(--low);}
+.dev-card.offline{border-left-color:var(--critical);opacity:.7;}
+.dev-card.highlight{border-color:var(--accent);box-shadow:0 0 0 2px rgba(102,126,234,.3);}
+.dev-head{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;}
+.dev-name{font-size:13px;font-weight:700;margin-bottom:2px;}
+.dev-vendor{font-size:10px;color:var(--text-muted);}
+.status-badge{padding:3px 8px;border-radius:3px;font-size:10px;font-weight:700;white-space:nowrap;}
+.status-badge.online{background:rgba(46,213,115,.12);color:var(--low);}
+.status-badge.offline{background:rgba(255,71,87,.12);color:var(--critical);}
+.dev-info{display:flex;flex-direction:column;gap:5px;}
+.info-row{display:flex;align-items:center;justify-content:space-between;font-size:11px;}
+.info-lbl{color:var(--text-muted);font-weight:500;}
+.info-val{font-weight:600;font-family:'Montserrat',sans-serif;font-size:11px;}
+.empty-state{grid-column:1/-1;text-align:center;padding:60px 20px;color:var(--text-secondary);}
+.empty-state i{font-size:48px;display:block;margin-bottom:16px;opacity:.2;}
+.scan-bar{position:fixed;bottom:0;left:220px;right:0;background:rgba(102,126,234,.9);color:#fff;padding:10px 20px;display:none;align-items:center;gap:12px;font-size:12px;font-weight:600;z-index:200;backdrop-filter:blur(8px);}
+.scan-bar.active{display:flex;}
+.spin{width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:sp .7s linear infinite;}
+@keyframes sp{to{transform:rotate(360deg)}}
+.live-dot{width:7px;height:7px;border-radius:50%;background:var(--low);animation:livepulse 2s ease infinite;}
+@keyframes livepulse{0%,100%{opacity:1}50%{opacity:.3}}
+.toast-box{position:fixed;bottom:18px;left:240px;z-index:9999;display:flex;flex-direction:column;gap:6px;}
+.toast{background:var(--bg-secondary);border:1px solid var(--border-color);border-radius:6px;padding:10px 14px;font-size:12px;animation:tIn .2s ease;font-family:'Montserrat',sans-serif;}
+@keyframes tIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.toast.ok{border-color:var(--low);} .toast.err{border-color:var(--critical);}
+::-webkit-scrollbar{width:4px;height:4px;} ::-webkit-scrollbar-track{background:transparent;} ::-webkit-scrollbar-thumb{background:var(--border-hover);border-radius:2px;}
+</style>
 </head>
 <body>
-    <!-- Theme Toggle Button -->
-    <button class="theme-toggle" onclick="toggleTheme()" id="themeToggle">
-        <i class="bi bi-moon-fill" id="themeIcon"></i>
-        <span id="themeText">Dark</span>
-    </button>
-    <!-- Custom Modal -->
-    <div class="custom-modal" id="customModal" onclick="closeModal()">
-        <div class="modal-content" onclick="event.stopPropagation()">
-            <div class="modal-icon" id="modalIcon"></div>
-            <div class="modal-title" id="modalTitle"></div>
-            <div class="modal-message" id="modalMessage"></div>
-            <div class="modal-buttons">
-                <button class="modal-btn modal-btn-primary" onclick="closeModal()">OK</button>
-            </div>
-        </div>
+<aside class="sidebar">
+  <div class="sidebar-brand"><h2>🌐 Network Monitor</h2><p>SafeG Monitoring System</p></div>
+  <nav style="padding:8px 0;">
+    <div class="nav-group-label">Monitoring</div>
+    <a href="index.php"                   class="nav-item active"><i class="bi bi-diagram-3-fill"></i>Network Monitor</a>
+    <a href="monitoring.php"              class="nav-item"><i class="bi bi-bar-chart-fill"></i>System Monitor</a>
+    <a href="ai_dashboard.php"            class="nav-item"><i class="bi bi-robot"></i>AI Predictions</a>
+    <a href="device_health_dashboard.php" class="nav-item"><i class="bi bi-heart-pulse-fill"></i>Device Health</a>
+    <a href="predictive_fault.php"        class="nav-item"><i class="bi bi-lightning-charge-fill"></i>Predictive Fault</a>
+    <a href="notifications.php"           class="nav-item"><i class="bi bi-bell-fill"></i>Notifications</a>
+    <div class="nav-group-label">Maintenance</div>
+    <a href="maintenance_history.php"     class="nav-item"><i class="bi bi-clock-history"></i>Maintenance History</a>
+    <a href="maintenance_schedules.php"   class="nav-item"><i class="bi bi-calendar-check-fill"></i>Schedules</a>
+    <a href="maintenance_reports.php"     class="nav-item"><i class="bi bi-file-earmark-text-fill"></i>Reports</a>
+    <div class="nav-group-label">System</div>
+    <a href="master_config.php"           class="nav-item"><i class="bi bi-gear-fill"></i>Master Config</a>
+  </nav>
+  <div class="sidebar-stats">
+    <div class="sidebar-stats-title">Network Summary</div>
+    <div class="ss-row"><span style="color:var(--text-secondary);font-size:11px;font-weight:500;">Total</span><span id="sbTotal" style="font-weight:800;font-size:11px;">—</span></div>
+    <div class="ss-row"><span style="color:var(--low);font-size:11px;font-weight:500;">Online</span><span id="sbOnline" style="color:var(--low);font-weight:800;font-size:11px;">—</span></div>
+    <div class="ss-row"><span style="color:var(--critical);font-size:11px;font-weight:500;">Offline</span><span id="sbOffline" style="color:var(--critical);font-weight:800;font-size:11px;">—</span></div>
+    <div class="ss-row"><span style="color:var(--text-muted);font-size:10px;">Last scan</span><span id="sbLastScan" style="color:var(--text-muted);font-size:10px;">—</span></div>
+  </div>
+  <div class="sidebar-devices" id="sidebarDevices"></div>
+</aside>
+
+<div class="main">
+  <div class="topbar">
+    <div>
+      <div class="page-title">🌐 Network Monitor</div>
+      <div class="page-subtitle">Real-time device discovery &amp; status monitoring</div>
     </div>
-
-    <div class="app-container">
-        <!-- Mobile Menu Button -->
-        <button class="mobile-menu-btn" onclick="toggleSidebar()">
-            <i class="bi bi-list" id="menuIcon"></i>
-        </button>
-        
-        <!-- Sidebar -->
-        <div class="sidebar" id="sidebar">
-            <div class="sidebar-header">
-                <h1 data-get="/">🌐 Network Monitor</h1>
-                <p>Device tracking system</p>
-            </div>
-            
-            <div class="sidebar-stats">
-                <div class="sidebar-stat">
-                    <span class="sidebar-stat-value total" id="sidebarTotal">0</span>
-                    <span class="sidebar-stat-label">Total</span>
-                </div>
-                <div class="sidebar-stat">
-                    <span class="sidebar-stat-value online" id="sidebarOnline">0</span>
-                    <span class="sidebar-stat-label">Online</span>
-                </div>
-                <div class="sidebar-stat">
-                    <span class="sidebar-stat-value offline" id="sidebarOffline">0</span>
-                    <span class="sidebar-stat-label">Offline</span>
-                </div>
-            </div>
-            
-            <!-- Filter Dropdown -->
-            <div class="sidebar-filter">
-                <div class="filter-dropdown">
-                    <select class="filter-select" id="sidebarFilterSelect" onchange="filterSidebar(this.value)">
-                        <option value="all">All Devices</option>
-                        <option value="online">Online Only</option>
-                        <option value="offline">Offline Only</option>
-                    </select>
-                </div>
-            </div>
-            
-            <div class="sidebar-search">
-                <input type="text" class="search-input" id="searchInput" placeholder="Search devices...">
-            </div>
-            
-            <!-- NAVIGATION MENU START -->
-            <div style="padding: 16px 24px; border-top: 1px solid var(--border-color); border-bottom: 1px solid var(--border-color); background: var(--bg-tertiary); margin: 0;">
-                <h3 style="font-size: 11px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 14px; font-weight: 700; display: flex; align-items: center; gap: 8px;">
-                    <i class="bi bi-compass-fill" style="font-size: 13px; color: #667eea;"></i>
-                    Dashboard Navigation
-                </h3>
-                
-                <div style="display: flex; flex-direction: column; gap: 8px;">
-                    <!-- Network Devices Button -->
-                    <a href="index.php" style="display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: #667eea; border-radius: 8px; text-decoration: none; color: #ffffff; font-weight: 600; font-size: 13px; transition: all 0.3s ease; border: 1px solid rgba(255,255,255,0.2); font-family: 'Montserrat', sans-serif;" onmouseover="this.style.transform='translateX(4px)'; this.style.boxShadow='0 4px 12px rgba(102, 126, 234, 0.4)';" onmouseout="this.style.transform='translateX(0)'; this.style.boxShadow='none';">
-                        <i class="bi bi-diagram-3-fill" style="font-size: 16px;"></i>
-                        <span>Network Devices</span>
-                    </a>
-                    
-                    <!-- System Monitoring Button -->
-                    <a href="monitoring.php" style="display: flex; align-items: center; gap: 12px; padding: 12px 14px; background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; text-decoration: none; color: var(--text-primary); font-weight: 600; font-size: 13px; transition: all 0.3s ease; font-family: 'Montserrat', sans-serif;" onmouseover="this.style.transform='translateX(4px)'; this.style.borderColor='#667eea'; this.style.background='var(--bg-tertiary)';" onmouseout="this.style.transform='translateX(0)'; this.style.borderColor='var(--border-color)'; this.style.background='var(--bg-secondary)';">
-                        <i class="bi bi-bar-chart-fill" style="font-size: 16px; color: #667eea;"></i>
-                        <span>System Monitoring</span>
-                    </a>
-                </div>
-            </div>
-
-            <div class="sidebar-devices" id="sidebarDevices">
-                <!-- Devices will be populated here -->
-            </div>
-        </div>
-        
-        <!-- Main Content -->
-        <div class="main-content">
-            <div class="header">
-                <h1 class="header-title">Dashboard</h1>
-                <p class="header-subtitle">Real-time network device monitoring</p>
-            </div>
-
-            <div class="network-info">
-                <h2>Network Information</h2>
-                <div class="network-grid">
-                    <div class="network-item">
-                        <div class="network-label">Your IP Address</div>
-                        <div class="network-value"><?php echo $yourIP; ?></div>
-                    </div>
-                    <div class="network-item">
-                        <div class="network-label">Network Range</div>
-                        <div class="network-value"><?php echo $networkRange; ?></div>
-                    </div>
-                    <div class="network-item">
-                        <div class="network-label">Last Scan</div>
-                        <div class="network-value" id="lastScan" style="font-size: 14px;">--:--:--</div>
-                    </div>
-                    <div class="network-item">
-                        <div class="network-label">Auto-Refresh</div>
-                        <div class="network-value" style="font-size: 14px; color: #667eea;">Every 10s</div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="controls">
-                <div class="filters">
-                    <button class="filter-btn active" data-filter="all" onclick="filterDevices('all')">
-                        All Devices
-                    </button>
-                    <button class="filter-btn online" data-filter="online" onclick="filterDevices('online')">
-                        Online Only
-                    </button>
-                    <button class="filter-btn offline" data-filter="offline" onclick="filterDevices('offline')">
-                        Offline Only
-                    </button>
-                </div>
-            </div>
-
-            <div class="actions">
-                <button onclick="scanNow()" class="btn btn-primary" id="scanBtn">
-                    <span>🔍</span> Scan Network
-                </button>
-                <button onclick="toggleAutoScan()" class="btn btn-secondary" id="autoScanBtn">
-                    <span>⏸</span> Pause Auto-Scan
-                </button>
-                <a href="add_device.php" class="btn btn-secondary">
-                    <span>➕</span> Add Device
-                </a>
-                <a href="networks.php" class="btn btn-secondary">
-                    <span>🌐</span> All Networks
-                </a>
-                <button onclick="exportToPDF()" class="btn btn-secondary">
-                    <span>📄</span> Export PDF
-                </button>
-                <button onclick="exportToExcel()" class="btn btn-secondary">
-                    <span>📊</span> Export Excel
-                </button>
-                
-            </div>
-
-            <div class="devices-grid" id="devicesGrid">
-                <div class="empty-state">
-                    <h2>Initializing...</h2>
-                    <p>Preparing to scan network</p>
-                </div>
-            </div>
-        </div>
+    <div class="topbar-right">
+      <div class="live-dot"></div>
+      <button class="btn btn-accent btn-sm" id="scanBtn" onclick="scanNow()"><i class="bi bi-radar"></i> Scan Network</button>
+      <button class="btn btn-ghost btn-sm" id="autoScanBtn" onclick="toggleAutoScan()"><i class="bi bi-pause-fill"></i> Pause Auto</button>
+      <button class="btn btn-ghost btn-sm" onclick="exportToPDF()"><i class="bi bi-file-pdf"></i> PDF</button>
+      <button class="btn btn-ghost btn-sm" onclick="exportToExcel()"><i class="bi bi-file-spreadsheet"></i> Excel</button>
+      <button class="icon-btn" onclick="toggleTheme()"><i class="bi bi-moon-fill" id="themeIcon"></i></button>
     </div>
+  </div>
 
-    <div class="scanning-indicator" id="scanningIndicator">
-        <div class="spinner"></div>
-        <div style="font-size: 13px; font-weight: 600;">Scanning network...</div>
-    </div>
+  <div class="stats-row">
+    <div class="stat-card sc-blue"><div class="stat-num" id="stTotal" style="color:var(--medium)">—</div><div class="stat-label">Total Devices</div></div>
+    <div class="stat-card sc-green"><div class="stat-num" id="stOnline" style="color:var(--low)">—</div><div class="stat-label">Online</div></div>
+    <div class="stat-card sc-red"><div class="stat-num" id="stOffline" style="color:var(--critical)">—</div><div class="stat-label">Offline</div></div>
+    <div class="stat-card sc-purple"><div class="stat-num" id="stPct" style="color:var(--accent)">—</div><div class="stat-label">Uptime %</div></div>
+  </div>
+
+  <div class="filters-bar">
+    <button class="filter-btn active" data-filter="all"     onclick="filterDevices('all',this)">All Devices</button>
+    <button class="filter-btn online"  data-filter="online"  onclick="filterDevices('online',this)">Online Only</button>
+    <button class="filter-btn offline" data-filter="offline" onclick="filterDevices('offline',this)">Offline Only</button>
+    <a href="add_device.php"  class="btn btn-ghost btn-sm" style="margin-left:auto;"><i class="bi bi-plus-lg"></i> Add Device</a>
+    <a href="networks.php"    class="btn btn-ghost btn-sm"><i class="bi bi-diagram-3"></i> Networks</a>
+  </div>
+
+  <div class="devices-grid" id="devicesGrid">
+    <div class="empty-state"><i class="bi bi-radar"></i><p>Scanning network...</p></div>
+  </div>
+</div>
+
+<div class="scan-bar" id="scanBar"><div class="spin"></div> Scanning network for devices...</div>
+<div class="toast-box" id="toastBox"></div>
 
 <script>
-    // Custom Modal Functions
-    function showModal(title, message, icon = '💡') {
-        const modal = document.getElementById('customModal');
-        const modalTitle = document.getElementById('modalTitle');
-        const modalMessage = document.getElementById('modalMessage');
-        const modalIcon = document.getElementById('modalIcon');
-        
-        modalTitle.textContent = title;
-        modalMessage.textContent = message;
-        modalIcon.textContent = icon;
-        
-        modal.classList.add('show');
-    }
-    
-    function closeModal() {
-        const modal = document.getElementById('customModal');
-        modal.classList.remove('show');
-    }
-    
-    // Close modal on ESC key
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') {
-            closeModal();
-        }
-    });
+let allDevices=[], currentFilter='all', autoScanEnabled=true, isScanning=false;
+let autoScanTimer=null;
 
-    // Theme Management - Load immediately
-    function toggleTheme() {
-        const body = document.body;
-        const themeIcon = document.getElementById('themeIcon');
-        const themeText = document.getElementById('themeText');
-        
-        if (body.classList.contains('light-mode')) {
-            // Switch to dark mode
-            body.classList.remove('light-mode');
-            themeIcon.className = 'bi bi-moon-fill';
-            themeText.textContent = 'Dark';
-            localStorage.setItem('theme', 'dark');
-        } else {
-            // Switch to light mode
-            body.classList.add('light-mode');
-            themeIcon.className = 'bi bi-sun-fill';
-            themeText.textContent = 'Light';
-            localStorage.setItem('theme', 'light');
-        }
-    }
+function toggleTheme(){ document.body.classList.toggle('light-mode'); const l=document.body.classList.contains('light-mode'); document.getElementById('themeIcon').className=l?'bi bi-sun-fill':'bi bi-moon-fill'; localStorage.setItem('nm_theme',l?'light':'dark'); }
+if(localStorage.getItem('nm_theme')==='light'){ document.body.classList.add('light-mode'); document.getElementById('themeIcon').className='bi bi-sun-fill'; }
 
-    // Load saved theme on page load
-    function loadTheme() {
-        const savedTheme = localStorage.getItem('theme');
-        const body = document.body;
-        const themeIcon = document.getElementById('themeIcon');
-        const themeText = document.getElementById('themeText');
-        
-        if (savedTheme === 'light') {
-            body.classList.add('light-mode');
-            if (themeIcon) themeIcon.className = 'bi bi-sun-fill';
-            if (themeText) themeText.textContent = 'Light';
-        } else {
-            if (themeIcon) themeIcon.className = 'bi bi-moon-fill';
-            if (themeText) themeText.textContent = 'Dark';
-        }
-    }
+function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function fmt(s){ if(!s) return 'Unknown'; try{ const d=new Date(s),now=new Date(),diff=Math.floor((now-d)/60000); if(diff<1)return 'Just now'; if(diff<60)return diff+'m ago'; if(diff<1440)return Math.floor(diff/60)+'h ago'; return Math.floor(diff/1440)+'d ago'; }catch(e){ return s; } }
 
-    // Theme toggle - only visible when scrolled to top
-    window.addEventListener('scroll', function() {
-        const themeToggle = document.getElementById('themeToggle');
-        const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-        
-        if (scrollTop > 50) {
-            // Scrolled down - hide
-            themeToggle.classList.add('hidden');
-        } else {
-            // At top - show
-            themeToggle.classList.remove('hidden');
-        }
-    }, false);
+function sortDevices(devs){ return [...devs].sort((a,b)=>{ if(a.online&&!b.online)return -1; if(!a.online&&b.online)return 1; return 0; }); }
 
-    // Load theme before page renders
-    loadTheme();
+function updateStats(){
+  const total=allDevices.length, online=allDevices.filter(d=>d.online).length, offline=total-online;
+  const pct=total>0?Math.round(online/total*100):0;
+  document.getElementById('stTotal').textContent=total;
+  document.getElementById('stOnline').textContent=online;
+  document.getElementById('stOffline').textContent=offline;
+  document.getElementById('stPct').textContent=pct+'%';
+  document.getElementById('sbTotal').textContent=total;
+  document.getElementById('sbOnline').textContent=online;
+  document.getElementById('sbOffline').textContent=offline;
+}
 
-    let autoScanEnabled = true;
-    let autoScanInterval = null;
-    let isScanning = false;
-    let allDevices = [];
-    let currentFilter = 'all';
-    let sidebarFilter = 'all';
-    
-    window.addEventListener('load', () => {
-        console.log('Page loaded, starting initial scan...');
-        loadTheme(); // Ensure theme is applied
-        scanNow();
-        startAutoScan();
-    });
-    
-    function startAutoScan() {
-        autoScanInterval = setInterval(() => {
-            if (autoScanEnabled && !isScanning) {
-                console.log('Auto-scan triggered');
-                scanNow();
-            }
-        }, 10000);
-    }
-    
-    function toggleAutoScan() {
-        autoScanEnabled = !autoScanEnabled;
-        const btn = document.getElementById('autoScanBtn');
-        const iconSpan = btn.querySelector('span');
-        if (autoScanEnabled) {
-            btn.innerHTML = '<span>⏸</span> Pause Auto-Scan';
-        } else {
-            btn.innerHTML = '<span>▶</span> Resume Auto-Scan';
-        }
-        console.log('Auto-scan:', autoScanEnabled ? 'enabled' : 'disabled');
-    }
-    
-    // Sort devices: Online first, then by name
-    function sortDevices(devices) {
-        return devices.sort((a, b) => {
-            // First sort by status (online first)
-            if (a.online && !b.online) return -1;
-            if (!a.online && b.online) return 1;
-            
-            // If same status, sort alphabetically by name
-            return a.name.localeCompare(b.name);
-        });
-    }
-    
-    function scanNow() {
-        if (isScanning) {
-            console.log('Already scanning, skipping...');
-            return;
-        }
-        
-        console.log('Starting scan...');
-        isScanning = true;
-        document.getElementById('scanBtn').disabled = true;
-        document.getElementById('scanningIndicator').classList.add('active');
-        
-        fetch('api_scan_real.php')
-            .then(response => {
-                console.log('Response status:', response.status);
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                return response.json();
-            })
-            .then(data => {
-                console.log('Scan complete! Response:', data);
-                
-                if (!data.success) {
-                    throw new Error(data.error || 'Scan failed');
-                }
-                
-                // Sort devices: online first
-                allDevices = sortDevices(data.devices);
-                
-                updateStats();
-                updateSidebar();
-                updateDevices();
-                
-                isScanning = false;
-                document.getElementById('scanBtn').disabled = false;
-                document.getElementById('scanningIndicator').classList.remove('active');
-                
-                const now = new Date();
-                document.getElementById('lastScan').textContent = 
-                    now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-                
-                console.log('Scan successful:', allDevices.length, 'devices (online first)');
-            })
-            .catch(error => {
-                console.error('Scan error:', error);
-                
-                isScanning = false;
-                document.getElementById('scanBtn').disabled = false;
-                document.getElementById('scanningIndicator').classList.remove('active');
-                
-                const grid = document.getElementById('devicesGrid');
-                grid.innerHTML = `
-                    <div class="empty-state">
-                        <h2 style="color: #ef4444;">Scan Failed</h2>
-                        <p>Error: ${error.message}</p>
-                        <p style="margin-top: 12px; font-size: 12px; color: var(--text-secondary);"></p>
-                        <div style="display: flex; justify-content: center; margin-top: 20px;">
-                            <button onclick="scanNow()" class="btn btn-primary">Try Again</button>
-                        </div>
-                    </div>
-                `;
-            });
-    }
-    
-    function updateStats() {
-        const online = allDevices.filter(d => d.online).length;
-        const offline = allDevices.filter(d => !d.online).length;
-        
-        document.getElementById('sidebarTotal').textContent = allDevices.length;
-        document.getElementById('sidebarOnline').textContent = online;
-        document.getElementById('sidebarOffline').textContent = offline;
-        
-        console.log('Stats updated - Total:', allDevices.length, 'Online:', online, 'Offline:', offline);
-    }
-    
-    function updateSidebar() {
-        const sidebar = document.getElementById('sidebarDevices');
-        
-        if (allDevices.length === 0) {
-            sidebar.innerHTML = '<div style="padding: 20px; text-align: center; color: var(--text-secondary);">No devices found</div>';
-            return;
-        }
-        
-        // Apply sidebar filter
-        let filteredDevices = allDevices;
-        if (sidebarFilter === 'online') {
-            filteredDevices = allDevices.filter(d => d.online);
-        } else if (sidebarFilter === 'offline') {
-            filteredDevices = allDevices.filter(d => !d.online);
-        }
-        
-        // Already sorted by sortDevices() - online first
-        sidebar.innerHTML = filteredDevices.map(device => `
-            <div class="sidebar-device" onclick="scrollToDevice('${device.ip}')" data-ip="${device.ip}" data-status="${device.online ? 'online' : 'offline'}">
-                <div class="sidebar-device-icon">
-                    ${device.icon}
-                </div>
-                <div class="sidebar-device-info">
-                    <div class="sidebar-device-name">${device.name}</div>
-                    <div class="sidebar-device-ip">${device.ip}</div>
-                </div>
-                <div class="sidebar-device-status ${device.online ? 'online' : 'offline'}"></div>
-            </div>
-        `).join('');
-    }
-    
-    function filterSidebar(filter) {
-        sidebarFilter = filter;
-        updateSidebar();
-        
-        // Also update main filter to match
-        filterDevices(filter);
-    }
-    
-    function filterDevices(filter) {
-        console.log('Filter changed to:', filter);
-        currentFilter = filter;
-        
-        // Update active button
-        document.querySelectorAll('.filter-btn').forEach(btn => {
-            btn.classList.remove('active');
-        });
-        document.querySelector(`[data-filter="${filter}"]`).classList.add('active');
-        
-        // Update sidebar dropdown to match
-        document.getElementById('sidebarFilterSelect').value = filter;
-        sidebarFilter = filter;
-        
-        // Filter devices
-        updateDevices();
-    }
-    
-    function updateDevices() {
-        const grid = document.getElementById('devicesGrid');
-        
-        let filteredDevices = allDevices;
-        if (currentFilter === 'online') {
-            filteredDevices = allDevices.filter(d => d.online);
-        } else if (currentFilter === 'offline') {
-            filteredDevices = allDevices.filter(d => !d.online);
-        }
-        
-        console.log('Displaying devices:', filteredDevices.length, 'Filter:', currentFilter);
-        
-        if (filteredDevices.length === 0) {
-            const filterText = currentFilter === 'all' ? 'No devices found' : 
-                               currentFilter === 'online' ? 'No online devices' : 'No offline devices';
-            grid.innerHTML = `
-                <div class="empty-state">
-                    <h2>${filterText}</h2>
-                    <p>${currentFilter === 'all' ? 'Scan network to discover devices' : 'Try changing the filter'}</p>
-                </div>
-            `;
-            return;
-        }
-        
-        // Already sorted by sortDevices() - online first
-        grid.innerHTML = filteredDevices.map((device, index) => `
-            <div class="device-card ${device.online ? 'online' : 'offline'}" id="device-${device.ip}" style="animation-delay: ${index * 0.05}s">
-                <div class="device-header">
-                    <div class="device-name-row">
-                        <div>
-                            <div class="device-name">
-                                ${device.icon} ${device.name}
-                            </div>
-                            ${device.hostname ? `<div class="device-hostname">${device.hostname}</div>` : ''}
-                            <div class="device-vendor">${device.vendor}</div>
-                        </div>
-                        <span class="status-badge ${device.online ? 'online' : 'offline'}">
-                            ${device.online ? '● ONLINE' : '○ OFFLINE'}
-                        </span>
-                    </div>
-                </div>
-                
-                <div class="device-info">
-                    <div class="info-row">
-                        <span class="info-label">IP Address</span>
-                        <span class="info-value">${device.ip}</span>
-                    </div>
-                    <div class="info-row">
-                        <span class="info-label">MAC Address</span>
-                        <span class="info-value">${device.mac}</span>
-                    </div>
-                    <div class="info-row">
-                        <span class="info-label">Device Type</span>
-                        <span class="info-value">${device.type}</span>
-                    </div>
-                    <div class="info-row">
-                        <span class="info-label">Last Active</span>
-                        <span class="info-value">${device.online ? 'Online' : formatLastSeen(device.last_seen)}</span>
-                    </div>
-                </div>
-            </div>
-        `).join('');
-        
-        console.log('Devices rendered successfully (online first)');
-    }
-    
-    function formatLastSeen(datetime) {
-        if (!datetime) return 'Unknown';
-        
-        const now = new Date();
-        const lastSeen = new Date(datetime);
-        const diffMs = now - lastSeen;
-        const diffMins = Math.floor(diffMs / 60000);
-        
-        if (diffMins < 1) return 'Just now';
-        if (diffMins < 60) return diffMins + 'm ago';
-        
-        const diffHours = Math.floor(diffMins / 60);
-        if (diffHours < 24) return diffHours + 'h ago';
-        
-        const diffDays = Math.floor(diffHours / 24);
-        return diffDays + 'd ago';
-    }
-    
-    function scrollToDevice(ip) {
-        const deviceCard = document.getElementById('device-' + ip);
-        if (deviceCard) {
-            deviceCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            
-            // Highlight effect
-            deviceCard.classList.add('highlight');
-            setTimeout(() => {
-                deviceCard.classList.remove('highlight');
-            }, 2000);
-            
-            // Update sidebar active state
-            document.querySelectorAll('.sidebar-device').forEach(d => d.classList.remove('active'));
-            const sidebarDevice = document.querySelector(`.sidebar-device[data-ip="${ip}"]`);
-            if (sidebarDevice) {
-                sidebarDevice.classList.add('active');
-            }
-            
-            // Close sidebar on mobile after selection
-            if (window.innerWidth <= 768) {
-                toggleSidebar();
-            }
-        }
-    }
-    
-    function toggleSidebar() {
-        const sidebar = document.getElementById('sidebar');
-        const menuIcon = document.getElementById('menuIcon');
-        
-        sidebar.classList.toggle('mobile-open');
-        
-        // Change icon
-        if (sidebar.classList.contains('mobile-open')) {
-            menuIcon.className = 'bi bi-x-lg';
-        } else {
-            menuIcon.className = 'bi bi-list';
-        }
-    }
+function updateSidebar(){
+  const sd=document.getElementById('sidebarDevices');
+  if(!allDevices.length){ sd.innerHTML='<div style="padding:12px;text-align:center;font-size:11px;color:var(--text-muted);">No devices found</div>'; return; }
+  sd.innerHTML=allDevices.map(d=>`<div class="sd-item" onclick="scrollToDevice('${esc(d.ip)}')">
+    <div class="sd-dot ${d.online?'online':'offline'}"></div>
+    <div><div class="sd-name">${esc(d.hostname||d.name)}</div><div class="sd-ip">${esc(d.ip)}</div></div>
+  </div>`).join('');
+}
 
-    // Export to PDF
-    function exportToPDF() {
-        const { jsPDF } = window.jspdf;
-        const doc = new jsPDF();
-        
-        // Get filtered devices based on current filter
-        let devicesToExport = allDevices;
-        if (currentFilter === 'online') {
-            devicesToExport = allDevices.filter(d => d.online);
-        } else if (currentFilter === 'offline') {
-            devicesToExport = allDevices.filter(d => !d.online);
-        }
-        
-        // Title
-        doc.setFontSize(20);
-        doc.setTextColor(40);
-        doc.text('Network Monitor Report', 14, 22);
-        
-        // Subtitle with date
-        doc.setFontSize(11);
-        doc.setTextColor(100);
-        const now = new Date();
-        const dateStr = now.toLocaleDateString('en-US', { 
-            year: 'numeric', 
-            month: 'long', 
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-        });
-        doc.text(`Generated: ${dateStr}`, 14, 32);
-        doc.text(`Filter: ${currentFilter.toUpperCase()}`, 14, 38);
-        doc.text(`Total Devices: ${devicesToExport.length}`, 14, 44);
-        
-        // Prepare table data
-        const tableData = devicesToExport.map(device => [
-            device.name,
-            device.ip,
-            device.mac,
-            device.vendor,
-            device.type,
-            device.online ? 'ONLINE' : 'OFFLINE',
-            device.online ? 'Just now' : formatLastSeen(device.last_seen)
-        ]);
-        
-        // Create table
-        doc.autoTable({
-            startY: 50,
-            head: [['Device Name', 'IP Address', 'MAC Address', 'Vendor', 'Type', 'Status', 'Last Seen']],
-            body: tableData,
-            theme: 'grid',
-            headStyles: {
-                fillColor: [102, 126, 234],
-                textColor: 255,
-                fontStyle: 'bold',
-                fontSize: 9
-            },
-            bodyStyles: {
-                fontSize: 8
-            },
-            alternateRowStyles: {
-                fillColor: [245, 245, 245]
-            },
-            columnStyles: {
-                0: { cellWidth: 30 }, // Device Name
-                1: { cellWidth: 28 }, // IP
-                2: { cellWidth: 32 }, // MAC
-                3: { cellWidth: 22 }, // Vendor
-                4: { cellWidth: 20 }, // Type
-                5: { cellWidth: 20 }, // Status
-                6: { cellWidth: 22 }  // Last Seen
-            },
-            didParseCell: function(data) {
-                // Color status column
-                if (data.column.index === 5) {
-                    if (data.cell.raw === 'ONLINE') {
-                        data.cell.styles.textColor = [16, 185, 129];
-                        data.cell.styles.fontStyle = 'bold';
-                    } else {
-                        data.cell.styles.textColor = [239, 68, 68];
-                        data.cell.styles.fontStyle = 'bold';
-                    }
-                }
-            }
-        });
-        
-        // Save PDF
-        const filename = `network-monitor-${now.getTime()}.pdf`;
-        doc.save(filename);
-        
-        console.log('PDF exported:', filename);
-    }
+function filterDevices(f,el){
+  currentFilter=f;
+  document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
+  if(el) el.classList.add('active');
+  renderDevices();
+}
 
-    // Export to Excel (CSV format)
-    function exportToExcel() {
-        // Get filtered devices based on current filter
-        let devicesToExport = allDevices;
-        if (currentFilter === 'online') {
-            devicesToExport = allDevices.filter(d => d.online);
-        } else if (currentFilter === 'offline') {
-            devicesToExport = allDevices.filter(d => !d.online);
-        }
-        
-        // Create CSV content
-        let csv = 'Device Name,IP Address,MAC Address,Vendor,Device Type,Status,Last Seen\n';
-        
-        devicesToExport.forEach(device => {
-            const row = [
-                device.name,
-                device.ip,
-                device.mac,
-                device.vendor,
-                device.type,
-                device.online ? 'ONLINE' : 'OFFLINE',
-                device.online ? 'Just now' : formatLastSeen(device.last_seen)
-            ];
-            
-            // Escape commas and quotes
-            const escapedRow = row.map(field => {
-                field = String(field);
-                if (field.includes(',') || field.includes('"') || field.includes('\n')) {
-                    return '"' + field.replace(/"/g, '""') + '"';
-                }
-                return field;
-            });
-            
-            csv += escapedRow.join(',') + '\n';
-        });
-        
-        // Create download link
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-        const link = document.createElement('a');
-        const url = URL.createObjectURL(blob);
-        
-        const now = new Date();
-        const filename = `network-monitor-${now.getTime()}.csv`;
-        
-        link.setAttribute('href', url);
-        link.setAttribute('download', filename);
-        link.style.visibility = 'hidden';
-        
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        
-        console.log('Excel/CSV exported:', filename);
-    }
-    
-    // Search functionality
-    document.getElementById('searchInput').addEventListener('input', function(e) {
-        const searchTerm = e.target.value.toLowerCase();
-        
-        document.querySelectorAll('.sidebar-device').forEach(device => {
-            const name = device.querySelector('.sidebar-device-name').textContent.toLowerCase();
-            const ip = device.querySelector('.sidebar-device-ip').textContent.toLowerCase();
-            
-            if (name.includes(searchTerm) || ip.includes(searchTerm)) {
-                device.style.display = 'flex';
-            } else {
-                device.style.display = 'none';
-            }
-        });
-    });
+function renderDevices(){
+  const grid=document.getElementById('devicesGrid');
+  let devs=allDevices;
+  if(currentFilter==='online') devs=allDevices.filter(d=>d.online);
+  if(currentFilter==='offline') devs=allDevices.filter(d=>!d.online);
+  if(!devs.length){
+    grid.innerHTML=`<div class="empty-state"><i class="bi bi-${currentFilter==='offline'?'wifi-off':'diagram-3'}"></i><p>${currentFilter==='all'?'No devices found':currentFilter==='online'?'No online devices':'No offline devices'}</p></div>`;
+    return;
+  }
+  grid.innerHTML=devs.map((d,i)=>`<div class="dev-card ${d.online?'online':'offline'}" id="device-${esc(d.ip)}" style="animation-delay:${i*.04}s">
+    <div class="dev-head">
+      <div><div class="dev-name">${d.icon||'🖥️'} ${esc(d.hostname||d.name)}</div><div class="dev-vendor">${esc(d.vendor||'Unknown vendor')}</div></div>
+      <span class="status-badge ${d.online?'online':'offline'}">${d.online?'● ONLINE':'○ OFFLINE'}</span>
+    </div>
+    <div class="dev-info">
+      <div class="info-row"><span class="info-lbl">IP Address</span><span class="info-val">${esc(d.ip)}</span></div>
+      <div class="info-row"><span class="info-lbl">MAC Address</span><span class="info-val">${esc(d.mac||'—')}</span></div>
+      <div class="info-row"><span class="info-lbl">Device Type</span><span class="info-val">${esc(d.type||'—')}</span></div>
+      <div class="info-row"><span class="info-lbl">Last Active</span><span class="info-val">${d.online?'Now':fmt(d.last_seen)}</span></div>
+    </div>
+  </div>`).join('');
+}
+
+function scrollToDevice(ip){
+  const el=document.getElementById('device-'+ip); if(!el) return;
+  el.scrollIntoView({behavior:'smooth',block:'center'});
+  el.classList.add('highlight'); setTimeout(()=>el.classList.remove('highlight'),2000);
+  document.querySelectorAll('.sd-item').forEach(s=>s.style.background='');
+}
+
+async function scanNow(){
+  if(isScanning) return;
+  isScanning=true;
+  document.getElementById('scanBtn').disabled=true;
+  document.getElementById('scanBar').classList.add('active');
+  try{
+    const r=await fetch('api_scan_real.php'); if(!r.ok) throw new Error('HTTP '+r.status);
+    const d=await r.json(); if(!d.success) throw new Error(d.error||'Scan failed');
+    allDevices=sortDevices(d.devices||[]);
+    updateStats(); updateSidebar(); renderDevices();
+    document.getElementById('sbLastScan').textContent=new Date().toLocaleTimeString('en-MY');
+    toast('Scan complete — '+allDevices.length+' devices','ok');
+  }catch(err){
+    toast('Scan error: '+err.message,'err');
+    document.getElementById('devicesGrid').innerHTML=`<div class="empty-state"><i class="bi bi-exclamation-circle"></i><p>${esc(err.message)}</p><button class="btn btn-ghost btn-sm" onclick="scanNow()" style="margin-top:12px;">Retry</button></div>`;
+  }finally{
+    isScanning=false;
+    document.getElementById('scanBtn').disabled=false;
+    document.getElementById('scanBar').classList.remove('active');
+  }
+}
+
+function toggleAutoScan(){
+  autoScanEnabled=!autoScanEnabled;
+  const btn=document.getElementById('autoScanBtn');
+  if(autoScanEnabled){
+    btn.innerHTML='<i class="bi bi-pause-fill"></i> Pause Auto';
+    startAutoScan();
+  } else {
+    btn.innerHTML='<i class="bi bi-play-fill"></i> Resume Auto';
+    clearInterval(autoScanTimer);
+  }
+}
+
+function startAutoScan(){ clearInterval(autoScanTimer); if(autoScanEnabled) autoScanTimer=setInterval(scanNow,30000); }
+
+function exportToPDF(){
+  if(!allDevices.length){ toast('No devices to export','err'); return; }
+  const {jsPDF}=window.jspdf; const doc=new jsPDF();
+  doc.setFontSize(20); doc.text('Network Monitor Report',14,22);
+  doc.setFontSize(11); doc.setTextColor(100);
+  doc.text('Generated: '+new Date().toLocaleString(),14,32);
+  doc.text('Total Devices: '+allDevices.length,14,38);
+  doc.autoTable({startY:44,head:[['Name','IP','MAC','Vendor','Type','Status','Last Seen']],
+    body:allDevices.map(d=>[d.hostname||d.name,d.ip,d.mac||'—',d.vendor||'—',d.type||'—',d.online?'ONLINE':'OFFLINE',d.online?'Now':fmt(d.last_seen)]),
+    theme:'grid',headStyles:{fillColor:[102,126,234],textColor:255,fontStyle:'bold',fontSize:9},bodyStyles:{fontSize:8},
+    didParseCell:function(data){ if(data.column.index===5){ data.cell.styles.textColor=data.cell.raw==='ONLINE'?[16,185,129]:[239,68,68]; data.cell.styles.fontStyle='bold'; } }
+  });
+  doc.save('network-report-'+Date.now()+'.pdf');
+  toast('PDF exported','ok');
+}
+
+function exportToExcel(){
+  if(!allDevices.length){ toast('No devices to export','err'); return; }
+  const ws=XLSX.utils.json_to_sheet(allDevices.map(d=>({'Name':d.hostname||d.name,'IP':d.ip,'MAC':d.mac||'—','Vendor':d.vendor||'—','Type':d.type||'—','Status':d.online?'ONLINE':'OFFLINE','Last Seen':d.online?'Now':fmt(d.last_seen)})));
+  const wb=XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,'Devices');
+  XLSX.writeFile(wb,'network-report-'+Date.now()+'.xlsx');
+  toast('Excel exported','ok');
+}
+
+function toast(msg,type='ok'){ const box=document.getElementById('toastBox'); const t=document.createElement('div'); t.className='toast '+type; t.textContent=msg; box.appendChild(t); setTimeout(()=>{t.style.opacity='0';t.style.transition='.3s';setTimeout(()=>t.remove(),300);},3000); }
+
+scanNow();
+startAutoScan();
 </script>
 </body>
 </html>

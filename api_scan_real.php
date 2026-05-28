@@ -4,16 +4,12 @@ ini_set('display_errors', 0);
 
 require_once 'config.php';
 
-set_time_limit(120);
+set_time_limit(180);
 header('Content-Type: application/json');
 
-// Clean any output buffer
 if (ob_get_level()) ob_end_clean();
 ob_start();
 
-// ========================================
-// LOGGING FUNCTION
-// ========================================
 function logActivity($category, $level, $message, $deviceId = null) {
     try {
         $db = getDB();
@@ -36,25 +32,43 @@ try {
     $networkInfo = getNetworkInfo();
     $currentNetworkRange = $networkInfo['range'];
     
-    // Log scan start
     logActivity('scan', 'INFO', "Network scan started for range: $currentNetworkRange");
     
-    // Scan network
+    // Scan network - USE YOUR ORIGINAL WORKING METHOD
     $arpDevices = scanNetworkFromARP();
     
     logActivity('scan', 'INFO', "ARP scan completed - Found " . count($arpDevices) . " devices");
     
-    // GRACE PERIOD
+    
     $gracePeriodSeconds = OFFLINE_GRACE_PERIOD;
     $safeRange = $db->real_escape_string($currentNetworkRange);
     
-    $offlineResult = $db->query("UPDATE devices 
-                SET status='offline' 
-                WHERE network_range='$safeRange' 
-                AND last_seen_at < DATE_SUB(NOW(), INTERVAL $gracePeriodSeconds SECOND)");
+    // ✅ FIX 1: Mark devices from OTHER networks as offline
+    $otherNetworkResult = $db->query("
+        UPDATE devices 
+        SET status='offline' 
+        WHERE network_range != '$safeRange' 
+        AND last_seen_at < DATE_SUB(NOW(), INTERVAL 300 SECOND)
+        AND status != 'offline'
+    ");
     
-    if ($offlineResult && $db->affected_rows > 0) {
-        logActivity('scan', 'WARNING', "Marked " . $db->affected_rows . " devices as offline (grace period: {$gracePeriodSeconds}s)");
+    $otherNetworkCount = $db->affected_rows;
+    if ($otherNetworkCount > 0) {
+        logActivity('scan', 'INFO', "Marked $otherNetworkCount devices from other networks as offline");
+    }
+    
+    // ✅ FIX 2: Mark devices on CURRENT network as offline (grace period)
+    $offlineResult = $db->query("
+        UPDATE devices 
+        SET status='offline' 
+        WHERE network_range='$safeRange' 
+        AND last_seen_at < DATE_SUB(NOW(), INTERVAL $gracePeriodSeconds SECOND)
+        AND status != 'offline'
+    ");
+    
+    $currentNetworkCount = $db->affected_rows;
+    if ($currentNetworkCount > 0) {
+        logActivity('scan', 'WARNING', "Marked $currentNetworkCount devices as offline (grace period: {$gracePeriodSeconds}s)");
     }
     
     // Process each discovered device
@@ -71,7 +85,7 @@ try {
         $onlineIPs[] = $ip;
         $existing = null;
         
-        // Try to find by MAC
+        // Try to find by MAC first
         if ($mac && $mac !== 'Unknown') {
             $existing = $db->query("SELECT * FROM devices 
                                    WHERE mac_address='$mac' AND network_range='$networkRange'
@@ -85,38 +99,19 @@ try {
                                    LIMIT 1");
         }
         
-        // If still not found, check for ANY duplicate before inserting
-        $duplicateCheck = $db->query("SELECT COUNT(*) as count FROM devices 
-                                      WHERE (mac_address='$mac' OR ip_address='$ip') 
-                                      AND network_range='$networkRange'");
-        
-        $hasDuplicate = $duplicateCheck->fetch_assoc()['count'] > 0;
-        
         if ($existing && $existing->num_rows > 0) {
             // Device exists - UPDATE
             $row = $existing->fetch_assoc();
             $deviceId = $row['id'];
             
-            // Check if status changed
             $wasOffline = $row['status'] === 'offline';
             
-            // Delete any other entries with same MAC or IP
-            $duplicates = $db->query("SELECT id FROM devices 
+            // Delete any duplicates
+            $db->query("DELETE FROM devices 
                        WHERE id != $deviceId 
                        AND (mac_address='$mac' OR ip_address='$ip')
                        AND network_range='$networkRange'");
             
-            if ($duplicates && $duplicates->num_rows > 0) {
-                $dupCount = $duplicates->num_rows;
-                $db->query("DELETE FROM devices 
-                           WHERE id != $deviceId 
-                           AND (mac_address='$mac' OR ip_address='$ip')
-                           AND network_range='$networkRange'");
-                
-                logActivity('scan', 'WARNING', "Removed $dupCount duplicate entries for device: $ip ($mac)", $deviceId);
-            }
-            
-            // Re-detect with enhanced method
             $vendor = getVendorFromMac($mac);
             $newType = detectDeviceType($mac, $hostname, $ip);
             
@@ -138,34 +133,33 @@ try {
             $db->query($updateSQL);
             $updatedDevices++;
             
-            // Log if device came back online
             if ($wasOffline) {
                 $deviceName = $hostname ?: $ip;
                 logActivity('network', 'INFO', "Device came back ONLINE: $deviceName ($ip)", $deviceId);
             }
             
-        } elseif (!$hasDuplicate) {
-            // Only insert if NO duplicate exists
-            $vendor = getVendorFromMac($mac);
-            $type = detectDeviceType($mac, $hostname, $ip);
+        } else {
+            // Check for duplicates before insert
+            $duplicateCheck = $db->query("SELECT COUNT(*) as count FROM devices 
+                                          WHERE (mac_address='$mac' OR ip_address='$ip') 
+                                          AND network_range='$networkRange'");
             
-            if ($hostname && $hostname !== 'Unknown') {
-                $name = $hostname;
-            } else {
-                $namePrefix = $vendor !== 'Unknown' ? $vendor : 'Device';
-                $lastOctet = substr($ip, strrpos($ip, '.') + 1);
-                $name = $namePrefix . '-' . $lastOctet;
-            }
+            $hasDuplicate = $duplicateCheck->fetch_assoc()['count'] > 0;
             
-            $safeName = $db->real_escape_string($name);
-            
-            // Double-check before insert
-            $finalCheck = $db->query("SELECT id FROM devices 
-                                      WHERE (mac_address='$mac' OR ip_address='$ip') 
-                                      AND network_range='$networkRange'
-                                      LIMIT 1");
-            
-            if (!$finalCheck || $finalCheck->num_rows == 0) {
+            if (!$hasDuplicate) {
+                $vendor = getVendorFromMac($mac);
+                $type = detectDeviceType($mac, $hostname, $ip);
+                
+                if ($hostname && $hostname !== 'Unknown') {
+                    $name = $hostname;
+                } else {
+                    $namePrefix = $vendor !== 'Unknown' ? $vendor : 'Device';
+                    $lastOctet = substr($ip, strrpos($ip, '.') + 1);
+                    $name = $namePrefix . '-' . $lastOctet;
+                }
+                
+                $safeName = $db->real_escape_string($name);
+                
                 $sql = "INSERT INTO devices (
                     name, ip_address, mac_address, network_range, device_type, status, 
                     last_checked_at, last_seen_at, created_at
@@ -178,70 +172,35 @@ try {
                 $newDeviceId = $db->insert_id;
                 $newDevices++;
                 
-                // Log new device discovery
-                logActivity('network', 'INFO', "NEW device discovered: $name ($ip) - Type: $type, Vendor: $vendor", $newDeviceId);
+                logActivity('network', 'INFO', "NEW device discovered: $name ($ip) - Type: $type", $newDeviceId);
             }
         }
     }
     
-    // Remove any duplicates that might have slipped through
+    // Cleanup duplicates
     $cleanupIPs = $db->query("
-        SELECT ip_address, MIN(id) as keep_id, COUNT(*) as count
+        SELECT ip_address, MIN(id) as keep_id
         FROM devices
         WHERE network_range='$safeRange'
         GROUP BY ip_address
         HAVING COUNT(*) > 1
     ");
     
-    $duplicatesRemoved = 0;
     if ($cleanupIPs) {
         while ($cleanup = $cleanupIPs->fetch_assoc()) {
             $cleanIP = $db->real_escape_string($cleanup['ip_address']);
             $keepID = $cleanup['keep_id'];
-            $dupCount = $cleanup['count'] - 1;
             
             $db->query("DELETE FROM devices 
                        WHERE ip_address='$cleanIP' 
                        AND network_range='$safeRange'
                        AND id != $keepID");
-            
-            $duplicatesRemoved += $dupCount;
         }
     }
     
-    // Same for MAC addresses
-    $cleanupMACs = $db->query("
-        SELECT mac_address, MIN(id) as keep_id, COUNT(*) as count
-        FROM devices
-        WHERE network_range='$safeRange'
-        AND mac_address != 'Unknown'
-        GROUP BY mac_address
-        HAVING COUNT(*) > 1
-    ");
-    
-    if ($cleanupMACs) {
-        while ($cleanup = $cleanupMACs->fetch_assoc()) {
-            $cleanMAC = $db->real_escape_string($cleanup['mac_address']);
-            $keepID = $cleanup['keep_id'];
-            $dupCount = $cleanup['count'] - 1;
-            
-            $db->query("DELETE FROM devices 
-                       WHERE mac_address='$cleanMAC' 
-                       AND network_range='$safeRange'
-                       AND id != $keepID");
-            
-            $duplicatesRemoved += $dupCount;
-        }
-    }
-    
-    if ($duplicatesRemoved > 0) {
-        logActivity('scan', 'WARNING', "Cleanup removed $duplicatesRemoved duplicate device entries");
-    }
-    
-    // Update network device count
     updateNetworkDeviceCount($currentNetworkRange);
     
-    // STEP 4: Get ALL devices for current network
+    // Get ALL devices
     $allDevices = $db->query("SELECT * FROM devices 
                               WHERE network_range='$safeRange' 
                               ORDER BY status DESC, last_seen_at DESC");
@@ -255,7 +214,7 @@ try {
             
             $lastSeen = new DateTime($device['last_seen_at']);
             $now = new DateTime();
-            $offlineMinutes = round($now->getTimestamp() - $lastSeen->getTimestamp()) / 60;
+            $offlineMinutes = round(($now->getTimestamp() - $lastSeen->getTimestamp()) / 60);
             
             $formattedDevices[] = [
                 'id' => $device['id'],
@@ -277,16 +236,13 @@ try {
     
     $allNetworks = getAllNetworks();
     
-    // Log scan completion
     $onlineCount = count(array_filter($formattedDevices, function($d) { return $d['online']; }));
     $offlineCount = count(array_filter($formattedDevices, function($d) { return !$d['online']; }));
     
     logActivity('scan', 'INFO', "Scan completed - Total: " . count($formattedDevices) . " devices ($onlineCount online, $offlineCount offline, $newDevices new, $updatedDevices updated)");
     
-    // Clear output
     ob_end_clean();
     
-    // Return JSON
     echo json_encode([
         'success' => true,
         'current_network' => $networkInfo,
@@ -298,18 +254,10 @@ try {
             'offline' => $offlineCount,
             'new_devices' => $newDevices,
             'updated_devices' => $updatedDevices,
-            'grace_period' => OFFLINE_GRACE_PERIOD,
-            'scan_methods' => [
-                'arp_refresh' => ARP_REFRESH_ENABLED,
-                'aggressive_scan' => AGGRESSIVE_SCAN_ENABLED,
-                'hostname_resolution' => HOSTNAME_RESOLUTION_ENABLED,
-                'scan_type' => 'ultra-fast',
-                'duplicate_prevention' => 'enabled'
-            ]
+            'grace_period' => OFFLINE_GRACE_PERIOD
         ],
         'scan_info' => [
             'devices_discovered' => count($arpDevices),
-            'methods_used' => array_unique(array_column($arpDevices, 'method')),
             'scan_time' => time()
         ]
     ], JSON_THROW_ON_ERROR);
@@ -317,7 +265,7 @@ try {
 } catch (Exception $e) {
     ob_end_clean();
     
-    logActivity('scan', 'ERROR', "Scan failed: " . $e->getMessage() . " in " . basename($e->getFile()) . " line " . $e->getLine());
+    logActivity('scan', 'ERROR', "Scan failed: " . $e->getMessage());
     
     echo json_encode([
         'success' => false,
